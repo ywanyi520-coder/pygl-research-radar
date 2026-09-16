@@ -26,6 +26,8 @@ jobs:
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e ".[test]"
       - run: pytest
+      - name: Build Pages site (PR validation only)
+        run: python -m pygl_radar.pages --reports reports --output site --public-site-url "https://pages.invalid/pygl-research-radar"
 
   radar:
     if: github.event_name != 'pull_request'
@@ -61,6 +63,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_API_URL: ${{ github.api_url }}
+          PUBLIC_SITE_URL: ${{ vars.PUBLIC_SITE_URL || format('https://{0}.github.io/{1}', github.repository_owner, github.event.repository.name) }}
           WECHAT_APP_ID: ${{ secrets.WECHAT_APP_ID }}
           WECHAT_APP_SECRET: ${{ secrets.WECHAT_APP_SECRET }}
           WECHAT_OPEN_ID: ${{ secrets.WECHAT_OPEN_ID }}
@@ -83,3 +86,59 @@ jobs:
           name: pygl-radar-${{ github.run_id }}
           path: reports/
           if-no-files-found: warn
+
+  pages:
+    # A separate job keeps a Pages outage from changing the radar/Issue job's
+    # result or losing its feedback state. It never runs for pull requests.
+    if: github.event_name != 'pull_request' && needs.radar.result == 'success'
+    needs: radar
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
+    env:
+      PUBLIC_SITE_URL: ${{ vars.PUBLIC_SITE_URL || format('https://{0}.github.io/{1}', github.repository_owner, github.event.repository.name) }}
+      CUSTOM_DOMAIN: ${{ vars.CUSTOM_DOMAIN }}
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download radar JSON reports
+        uses: actions/download-artifact@v4
+        with:
+          name: pygl-radar-${{ github.run_id }}
+          path: reports
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e .
+      - name: Build static Pages site
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          mkdir -p site/data/reports
+          find reports -maxdepth 1 -type f -name '*.json' -exec cp {} site/data/reports/ \;
+          python -m pygl_radar.pages --reports site/data/reports --output site --public-site-url "$PUBLIC_SITE_URL" --repository "$GITHUB_REPOSITORY"
+      - name: Persist report history for stable URLs
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add site
+          if git diff --cached --quiet; then
+            echo "No Pages content changes to commit"
+          else
+            git commit -m "Publish radar Pages ${GITHUB_RUN_ID}"
+            git push
+          fi
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

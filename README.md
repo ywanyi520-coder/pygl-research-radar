@@ -1,6 +1,6 @@
 # PYGL Research Radar v1
 
-PYGL Research Radar 是一个证据感知的每日生物医学文献筛选器。它从 PubMed 与 Crossref 的 topic lane 和高层期刊 journal-first lane 联合检索过去 48 小时的候选论文，批量 LLM 初筛，再对保留论文尝试合法开放获取全文，按“实验结构可迁移性”优先于关键词重合的规则排序，生成中文 Markdown/HTML 简报，发布为可手机打开的 GitHub Issue，并通过微信公众号测试账号模板消息推送。
+PYGL Research Radar 是一个证据感知的每日生物医学文献筛选器。它从 PubMed 与 Crossref 的 topic lane 和高层期刊 journal-first lane 联合检索过去 48 小时的候选论文，批量 LLM 初筛，再对保留论文尝试合法开放获取全文，按“实验结构可迁移性”优先于关键词重合的规则排序，生成中文 Markdown/HTML 简报，发布为 GitHub Issue 备份，并通过微信公众号测试账号模板消息推送公开 Pages 日报。
 
 它服务于巨噬细胞 efferocytosis / phagosome-lysosome processing 研究，特别关注可迁移的实验模式：conditioned medium → fractionation → ligand → blockade/add-back、抑制剂 → 激活/激动剂 → rescue、上游阻断 → 下游旁路/epistasis、急性磷酸化 → 代谢 → 功能表型、吞噬结合完整但吞噬后处理受损，以及 injury-first → delayed intervention → resolution。
 
@@ -40,6 +40,18 @@ python -m pygl_radar --config config.example.yaml --fixture fixtures/sample_pape
 python -m pygl_radar --config config.yaml
 ```
 
+## Web Dashboard / GitHub Pages
+
+每次生产 radar 成功后，Pages job 会从当日 JSON digest 构建静态手机优先网站，并把脱敏后的日报数据保存在 `site/data/reports/`，因此旧日报的永久 URL 不会因后续部署改变：
+
+- `/` 与 `/latest/`：最新一期日报
+- `/reports/YYYY-MM-DD/`：某一天的永久日报
+- `/archive/`：按日期倒序的历史列表
+
+页面只展示 AI digest、评分、证据状态和 DOI/PubMed/Publisher/合法全文来源链接；`fulltext_text`、原始全文缓存和 secret 不会复制到 Pages。GitHub Issue 仍是日报备份和反馈入口，格式为 `feedback <DOI或PMID> <relevant|idea|method|skip>`。
+
+默认公开地址由 `GITHUB_REPOSITORY` 推导为 project Pages 地址。生产环境可在 Actions Variables 设置 `PUBLIC_SITE_URL`，例如 `https://radar.example.com`；设置 `CUSTOM_DOMAIN=radar.example.com` 会生成 Pages 所需的 `CNAME`。不需要修改业务代码，也不需要在仓库提交 secret。Project Pages 的 `/pygl-research-radar/` base path 由相对内部链接处理，绑定自定义根域名后同样有效。
+
 反馈标签只做有界的软偏好修正，不会永久排除陌生机制。报告 Issue 评论格式为 `feedback <DOI或PMID> <relevant|idea|method|skip>`；下一次 Actions 运行会学习期刊、机制与实验模式偏好：
 
 ```bash
@@ -68,7 +80,7 @@ pytest
 | `RADAR_REVIEW_MODEL` | 可选，深度复核模型名 |
 | `UNPAYWALL_EMAIL` | 可选，启用 Unpaywall 合规 OA 查询所需的联系邮箱 |
 
-不要把 AppID、AppSecret、OpenID、模板 ID、模型 key 或邮箱写入代码、YAML、fixture、日志或 PR。Workflow 使用 Actions cache 保存成功推送的 DOI/PMID 与反馈状态，报告同时发布为 GitHub Issue 并上传为 artifact；PR 会运行无 secrets 的 pytest CI，生产 WeChat push 仅在 schedule/manual 事件执行。
+不要把 AppID、AppSecret、OpenID、模板 ID、模型 key 或邮箱写入代码、YAML、fixture、日志或 PR。Workflow 使用 Actions cache 保存成功推送的 DOI/PMID 与反馈状态，报告同时发布为 GitHub Issue 并上传为 artifact；PR 会运行无 secrets 的 pytest 与 Pages build CI，生产 WeChat push 仅在 schedule/manual 事件执行。Pages 构建/部署是 radar 成功后的独立 job，PR 事件不会 deploy。
 
 微信 notifier 是独立抽象。`MockNotifier` 用于 dry-run 和测试；`WeChatNotifier` 使用官方测试账号/模板消息接口，token 与发送错误不会把 secret 或 token 写入日志。
 
@@ -93,6 +105,7 @@ pygl_radar/
 ├── review.py      # evidence-aware deep review and claim sanitizer
 ├── scoring.py     # machine-readable weighted six-axis scoring
 ├── digest.py      # Chinese Markdown/HTML/WeChat rendering
+├── pages.py       # static Pages renderer and permanent report/archive URLs
 ├── notifiers/     # MockNotifier and WeChat template-message notifier
 ├── feedback.py    # issue-comment ingestion and bounded tag-level soft preference modifier
 ├── publishing.py  # mobile-readable GitHub Issue report publisher

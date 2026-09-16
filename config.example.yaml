@@ -89,6 +89,9 @@ output:
 publishing:
   # Production runs publish a mobile-readable GitHub Issue before WeChat push.
   enabled: true
+  # Optional. Actions may set PUBLIC_SITE_URL instead; this value supports a
+  # project Pages URL or a future custom root domain without code changes.
+  public_site_url: ""
 
 state:
   seen_cache: state/seen.json
