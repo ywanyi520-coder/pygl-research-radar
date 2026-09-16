@@ -40,6 +40,30 @@ python -m pygl_radar --config config.example.yaml --fixture fixtures/sample_pape
 python -m pygl_radar --config config.yaml
 ```
 
+## Codex-native comparison mode
+
+Codex Automation 是与现有 DeepSeek/OpenAI-compatible GitHub Actions 流水线并行的独立研究模式；它不替换生产 cron、API credentials、评分权重、期刊列表或冻结研究画像。建议在 GitHub Actions 约 08:30（Asia/Shanghai）之后，于 **08:45 Asia/Shanghai** 运行 Codex Automation，比较两条链路的论文选择和证据解释质量。
+
+准备阶段不创建或调用任何 LLM API client，继续复用现有 PubMed/Crossref 双 lane、48 小时窗口、去重、期刊配额、candidate cap、seen-state 和可用的 GitHub feedback ingestion：
+
+```bash
+python -m pygl_radar codex-prepare --config config.yaml
+# 没有 config.yaml 时：
+python -m pygl_radar codex-prepare --config config.example.yaml
+```
+
+它生成 gitignored 的 `work/YYYY-MM-DD/`，其中 `candidates.json` 是语义 triage 前的完整候选池。Codex 先读完整候选池，再写只引用已知 `paper_id` 的 `shortlist.json`（约 10–15 篇），然后执行：
+
+```bash
+python -m pygl_radar codex-hydrate \
+  --workspace work/YYYY-MM-DD \
+  --shortlist work/YYYY-MM-DD/shortlist.json
+# Codex 写入 work/YYYY-MM-DD/codex_reviewed.json 后：
+python -m pygl_radar codex-validate --workspace work/YYYY-MM-DD
+```
+
+只有验证成功才会生成可比较的 `codex-output/YYYY-MM-DD.json` 和 `.md`。输出带有 `review_provider=codex-automation`、`review_mode=codex-native`，严格移除 raw full text；`work/` 不会提交，也不会复制到 GitHub Pages。完整的短 Automation prompt、权限边界、证据模式和失败处理见 [`docs/CODEX_AUTOMATION_PROMPT.md`](docs/CODEX_AUTOMATION_PROMPT.md)。
+
 ## Web Dashboard / GitHub Pages
 
 每次生产 radar 成功后，Pages job 会从当日 JSON digest 构建静态手机优先网站，并把脱敏后的日报数据保存在 `site/data/reports/`，因此旧日报的永久 URL 不会因后续部署改变：
@@ -116,6 +140,7 @@ pygl_radar/
 ├── scoring.py     # machine-readable weighted six-axis scoring
 ├── digest.py      # Chinese Markdown/HTML/WeChat rendering
 ├── pages.py       # static Pages renderer and permanent report/archive URLs
+├── codex_mode.py  # deterministic Codex workspace, OA hydration, and validation
 ├── notifiers/     # MockNotifier and WeChat template-message notifier
 ├── feedback.py    # issue-comment ingestion and bounded tag-level soft preference modifier
 ├── publishing.py  # mobile-readable GitHub Issue report publisher
