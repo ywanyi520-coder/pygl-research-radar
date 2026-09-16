@@ -1,0 +1,95 @@
+profile:
+  name: "PYGL Research Radar"
+  system: "macrophage efferocytosis / phagosome-lysosome processing"
+  keywords: [macrophage, efferocytosis, phagosome, lysosome, glycogen, PYGL]
+  mechanisms:
+    - apoptotic-cell soluble signals
+    - ATP
+    - P2Y2
+    - PLC
+    - Ca2+
+    - sAC
+    - cAMP
+    - PKA
+    - PhK
+    - PYGL
+    - Ser15
+    - glycogenolysis
+    - phagosome
+    - lysosome
+    - acidification
+    - maturation
+    - fusion
+    - degradation
+    - beta2-AR
+    - norepinephrine
+    - injury resolution
+  experimental_patterns:
+    - conditioned medium
+    - size fractionation
+    - candidate ligand
+    - blockade
+    - add-back
+    - inhibitor
+    - agonist
+    - rescue
+    - epistasis
+    - downstream bypass
+    - acute phosphorylation
+    - metabolic change
+    - functional phenotype
+    - post-engulfment
+    - organelle function
+    - delayed intervention
+    - resolution
+
+sources:
+  window_hours: 48
+  max_candidates: 80
+  pubmed:
+    enabled: true
+    max_results: 80
+  crossref:
+    enabled: true
+    max_results: 80
+  journal_lane:
+    enabled: true
+    max_results: 40
+    # Keep the high-tier sweep focused on research articles.
+    exclude_publication_types: [Editorial, News, Comment, Letter, Review]
+  journal_candidate_slots: 40
+  journal_per_venue_quota: 8
+  # Frozen high-tier journal sweep; names follow PubMed/NLM where applicable.
+  prioritize_journals: [Nature, Cell, Science, "Nature Immunology", "Nature Metabolism", "Nature Cell Biology", "Nature Medicine", "Nature Communications", Immunity, "Cell Metabolism", "Cell Reports Medicine", "Science Immunology", "Science Translational Medicine", "J Exp Med", "Proc Natl Acad Sci U S A"]
+
+triage:
+  batch_size: 20
+  retain: 15
+
+fulltext:
+  enabled: true
+  min_text_chars: 200
+  min_html_text_chars: 2000
+  timeout_seconds: 30
+
+scoring:
+  weights:
+    direct_relevance: 0.12
+    mechanism_relevance: 0.14
+    experimental_similarity: 0.24
+    transferability: 0.22
+    idea_value: 0.18
+    evidence_quality: 0.10
+  min_score: 50
+  top_n: 5
+
+output:
+  directory: reports
+
+publishing:
+  # Production runs publish a mobile-readable GitHub Issue before WeChat push.
+  enabled: true
+
+state:
+  seen_cache: state/seen.json
+  feedback: state/feedback.json
