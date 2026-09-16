@@ -341,15 +341,6 @@ def build_pages(reports_dir: str | Path = "reports", output_dir: str | Path = "s
         report_path.parent.mkdir(parents=True, exist_ok=True)
         report_path.write_text(_document(f"PYGL Research Radar · {report['date']}", _daily_body(report, "../../"), "../../", public_site_url=public_site_url, report_date=report["date"], issue_url=str(report.get("stats", {}).get("issue_url", ""))), encoding="utf-8")
     (site_path / ".nojekyll").write_text("\n", encoding="utf-8")
-    custom_domain = str(os.environ.get("CUSTOM_DOMAIN", "")).strip()
-    if not custom_domain:
-        host = urlparse(public_site_url).hostname or ""
-        if host and not host.casefold().endswith(".github.io"):
-            custom_domain = host
-    if custom_domain:
-        custom_domain = custom_domain.removeprefix("https://").removeprefix("http://").rstrip("/").split("/", 1)[0]
-        if custom_domain:
-            (site_path / "CNAME").write_text(custom_domain + "\n", encoding="utf-8")
     return {"output_dir": str(site_path), "report_dates": [report["date"] for report in reports], "latest_date": latest["date"]}
 
 

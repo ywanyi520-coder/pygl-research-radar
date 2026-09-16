@@ -179,6 +179,7 @@ def run_radar(
     disable_fulltext: bool = False,
     notifier: Notifier | None = None,
     publisher: ReportPublisher | None = None,
+    notify: bool = True,
 ) -> RunResult:
     """Execute retrieval -> triage -> lawful full-text -> review -> digest -> push."""
     config = config_or_path if isinstance(config_or_path, dict) else load_config(config_or_path)
@@ -265,24 +266,43 @@ def run_radar(
         publication = PublicationResult(False, error="report publication setup failed")
     report_url = publication.url if publication.ok else ""
     pages_url = public_report_url(config)
+    notification_url = pages_url or report_url
     if publication.ok and publication.issue_number is not None:
         feedback.record_report_issue(report_date, publication.issue_number, publication.url)
         stats["issue_url"] = report_url
+    if publication.ok:
         stats["pages_url"] = pages_url
         write_json_report()
-        notification_url = pages_url or report_url
-        message = render_wechat_message(recommended, stats, report_url=notification_url)
-        push_result = _notifier(dry_run, notifier).send(message, url=notification_url)
-    elif publication.ok:
-        stats["pages_url"] = pages_url
-        write_json_report()
-        notification_url = pages_url or report_url
-        message = render_wechat_message(recommended, stats, report_url=notification_url)
-        push_result = _notifier(dry_run, notifier).send(message, url=notification_url)
-    else:
+    if not publication.ok:
         push_result = NotificationResult(False, "report-publication", error=publication.error or "report publication failed")
+    elif not notify:
+        # Production Actions sends after Pages has deployed. Mark the radar
+        # phase successful here so a later WeChat failure cannot replay papers.
+        push_result = NotificationResult(True, "deferred")
+    else:
+        message = render_wechat_message(recommended, stats, report_url=notification_url)
+        push_result = _notifier(dry_run, notifier).send(message, url=notification_url)
     feedback.save()
     if push_result.ok and not dry_run:
         seen.mark(recommended)
         seen.save()
     return RunResult(recommended, stats, markdown_path, html_path, json_path, push_result, report_url, pages_url)
+
+
+def notify_report(
+    report_path: str | Path,
+    *,
+    report_url: str = "",
+    dry_run: bool = False,
+    notifier: Notifier | None = None,
+) -> NotificationResult:
+    """Send an already-produced JSON digest without rerunning radar."""
+    raw = json.loads(Path(report_path).read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ValueError("report JSON must be an object")
+    raw_papers = raw.get("papers") if isinstance(raw.get("papers"), list) else []
+    papers = [Paper.from_dict(item) for item in raw_papers if isinstance(item, dict)]
+    stats = raw.get("stats") if isinstance(raw.get("stats"), dict) else {}
+    selected_url = report_url.strip() or str(stats.get("pages_url") or stats.get("issue_url") or "").strip()
+    message = render_wechat_message(papers, stats, report_url=selected_url)
+    return _notifier(dry_run, notifier).send(message, url=selected_url)

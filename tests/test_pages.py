@@ -4,7 +4,7 @@ from pathlib import Path
 import yaml
 
 from pygl_radar.pages import build_pages, public_report_url, resolve_public_site_url
-from pygl_radar.pipeline import run_radar
+from pygl_radar.pipeline import notify_report, run_radar
 from pygl_radar.publishing import PublicationResult
 from pygl_radar.notifiers.base import NotificationResult
 
@@ -121,7 +121,7 @@ def test_html_escaping_and_raw_fulltext_are_not_published(tmp_path: Path):
     assert "SECRET_RAW_FULLTEXT_DO_NOT_PUBLISH" not in persisted
 
 
-def test_project_pages_uses_relative_links_and_custom_domain_writes_cname(tmp_path: Path):
+def test_project_pages_uses_relative_links_and_custom_domain_uses_settings_not_cname(tmp_path: Path):
     reports = tmp_path / "reports"
     site = tmp_path / "site"
     _write_report(reports, "2026-09-16")
@@ -134,7 +134,7 @@ def test_project_pages_uses_relative_links_and_custom_domain_writes_cname(tmp_pa
 
     custom_site = tmp_path / "custom-site"
     build_pages(reports, custom_site, public_site_url="https://radar.example.com")
-    assert (custom_site / "CNAME").read_text(encoding="utf-8") == "radar.example.com\n"
+    assert not (custom_site / "CNAME").exists()
     root = (custom_site / "index.html").read_text(encoding="utf-8")
     assert 'https://radar.example.com/latest/' in root
     assert "github.io" not in root
@@ -177,6 +177,29 @@ def test_wechat_receives_pages_latest_url(monkeypatch, tmp_path: Path):
     assert saved["stats"]["issue_url"].startswith("https://github.com/")
 
 
+def test_radar_can_defer_wechat_until_after_pages(tmp_path: Path):
+    config = {
+        "profile": {"keywords": ["PYGL"], "mechanisms": ["lysosome"], "experimental_patterns": ["rescue"]},
+        "triage": {"batch_size": 20, "retain": 15}, "fulltext": {"enabled": False},
+        "scoring": {"min_score": 40, "top_n": 5}, "output": {"directory": str(tmp_path / "reports")},
+        "state": {"seen_cache": str(tmp_path / "seen.json"), "feedback": str(tmp_path / "feedback.json")},
+    }
+    notifier = _CaptureNotifier()
+    result = run_radar(config, fixture_path=Path(__file__).parent.parent / "fixtures/sample_papers.json", dry_run=True, notifier=notifier, publisher=_Publisher(), notify=False)
+    assert result.notification.ok and result.notification.provider == "deferred"
+    assert notifier.url == ""
+    assert json.loads(result.json_path.read_text(encoding="utf-8"))["stats"]["issue_url"].startswith("https://github.com/")
+
+
+def test_notify_report_sends_the_selected_post_deploy_url(tmp_path: Path):
+    reports = tmp_path / "reports"
+    _write_report(reports, "2026-09-16")
+    notifier = _CaptureNotifier()
+    result = notify_report(reports / "2026-09-16.json", report_url="https://owner.github.io/pygl-research-radar/latest/", notifier=notifier)
+    assert result.ok
+    assert notifier.url == "https://owner.github.io/pygl-research-radar/latest/"
+
+
 def test_pages_workflow_builds_on_pr_but_deploys_only_after_production_radar():
     workflow_path = Path(__file__).parents[1] / ".github" / "workflows" / "daily-radar.yml"
     text = workflow_path.read_text(encoding="utf-8")
@@ -184,5 +207,12 @@ def test_pages_workflow_builds_on_pr_but_deploys_only_after_production_radar():
     assert "pull_request:" in text
     assert "actions/deploy-pages@v4" in text
     assert workflow["jobs"]["pages"]["if"] == "github.event_name != 'pull_request' && needs.radar.result == 'success'"
+    assert workflow["jobs"]["notify"]["if"] == "always() && needs.radar.result == 'success'"
+    assert workflow["jobs"]["notify"]["needs"] == ["radar", "pages"]
+    assert workflow["concurrency"]["cancel-in-progress"] is False
+    radar_steps = workflow["jobs"]["radar"]["steps"]
+    radar_run = next(step for step in radar_steps if "defer-notification" in str(step.get("run", "")))
+    assert "--defer-notification" in radar_run["run"]
+    assert not any("WECHAT_APP_ID" in str(step.get("env", {})) for step in radar_steps)
     assert any("pygl_radar.pages" in str(step.get("run", "")) for step in workflow["jobs"]["ci"]["steps"])
     assert "contents: write" in text and "pages: write" in text and "id-token: write" in text
