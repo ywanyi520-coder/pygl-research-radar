@@ -16,6 +16,7 @@ from .fulltext import FulltextAcquirer, apply_fulltext
 from .llm import client_from_env
 from .models import Paper
 from .notifiers import Notifier, WeChatNotifier, WeChatNotifierConfig, MockNotifier, NotificationResult
+from .pages import public_report_url
 from .publishing import GitHubIssuePublisher, NoopPublisher, PublicationResult, ReportPublisher
 from .review import review_paper
 from .scoring import rank_papers, score_paper
@@ -35,6 +36,7 @@ class RunResult:
     json_path: Path
     notification: NotificationResult
     report_url: str = ""
+    public_report_url: str = ""
 
 
 def _fixture(path: str | Path) -> list[Paper]:
@@ -232,6 +234,7 @@ def run_radar(
         "unseen": len(unseen),
         "triaged": len(triaged),
         "reviewed": reviewed,
+        "fulltext_reviewed": sum(paper.evidence_level == "FULLTEXT_READ" for paper in triaged),
         "feedback_ingested": feedback_ingested,
         "recommended": len(recommended),
         "source_retrieved": source_stats.get("retrieved", {}),
@@ -249,7 +252,11 @@ def run_radar(
     json_path = directory / f"{report_date}.json"
     markdown_path.write_text(render_markdown(recommended, stats, report_date=report_date), encoding="utf-8")
     html_path.write_text(render_html(recommended, stats, report_date=report_date), encoding="utf-8")
-    json_path.write_text(json.dumps({"version": 1, "date": report_date, "stats": stats, "papers": [paper.to_dict() for paper in recommended]}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    def write_json_report() -> None:
+        # Paper.to_dict() intentionally excludes the in-memory full-text cache.
+        json_path.write_text(json.dumps({"version": 1, "date": report_date, "stats": stats, "papers": [paper.to_dict() for paper in recommended]}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    write_json_report()
     feedback.remember_papers(recommended)
     try:
         publication = _publisher(config, dry_run, publisher).publish(markdown_path.read_text(encoding="utf-8"), report_date=report_date)
@@ -257,17 +264,25 @@ def run_radar(
         logger.warning("Report publication setup failed: %s", type(exc).__name__)
         publication = PublicationResult(False, error="report publication setup failed")
     report_url = publication.url if publication.ok else ""
+    pages_url = public_report_url(config)
     if publication.ok and publication.issue_number is not None:
         feedback.record_report_issue(report_date, publication.issue_number, publication.url)
-        message = render_wechat_message(recommended, stats, report_url=report_url)
-        push_result = _notifier(dry_run, notifier).send(message, url=report_url)
+        stats["issue_url"] = report_url
+        stats["pages_url"] = pages_url
+        write_json_report()
+        notification_url = pages_url or report_url
+        message = render_wechat_message(recommended, stats, report_url=notification_url)
+        push_result = _notifier(dry_run, notifier).send(message, url=notification_url)
     elif publication.ok:
-        message = render_wechat_message(recommended, stats, report_url=report_url)
-        push_result = _notifier(dry_run, notifier).send(message, url=report_url)
+        stats["pages_url"] = pages_url
+        write_json_report()
+        notification_url = pages_url or report_url
+        message = render_wechat_message(recommended, stats, report_url=notification_url)
+        push_result = _notifier(dry_run, notifier).send(message, url=notification_url)
     else:
         push_result = NotificationResult(False, "report-publication", error=publication.error or "report publication failed")
     feedback.save()
     if push_result.ok and not dry_run:
         seen.mark(recommended)
         seen.save()
-    return RunResult(recommended, stats, markdown_path, html_path, json_path, push_result, report_url)
+    return RunResult(recommended, stats, markdown_path, html_path, json_path, push_result, report_url, pages_url)
