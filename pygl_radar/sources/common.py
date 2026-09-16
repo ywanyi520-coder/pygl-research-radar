@@ -33,8 +33,11 @@ class HTTPClient:
         )
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                body = response.read().decode("utf-8", errors="replace")
-                return HTTPResponse(response.status, body, dict(response.headers.items()))
+                raw = response.read()
+                headers = dict(response.headers.items())
+                content_type = " ".join(f"{key}:{value}" for key, value in headers.items()).casefold()
+                body: str | bytes = raw if "application/pdf" in content_type or raw.startswith(b"%PDF") else raw.decode("utf-8", errors="replace")
+                return HTTPResponse(response.status, body, headers)
         except Exception as exc:
             logger.warning("HTTP request failed for %s: %s", urllib.parse.urlsplit(url).netloc, exc)
             return HTTPResponse(0, "", {})

@@ -45,7 +45,7 @@ class GitHubIssuePublisher:
             raise ValueError("Missing report publishing environment: " + ", ".join(missing))
         return cls(token, repository, api_url=os.environ.get("GITHUB_API_URL", "https://api.github.com").strip())
 
-    def _request(self, method: str, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    def _request(self, method: str, path: str, payload: dict[str, Any] | None = None) -> Any:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8") if payload is not None else None
         request = urllib.request.Request(
             f"{self.api_url}{path}", data=data, method=method,
@@ -57,11 +57,28 @@ class GitHubIssuePublisher:
         )
         with urllib.request.urlopen(request, timeout=30) as response:
             value = json.loads(response.read().decode("utf-8"))
-        return value if isinstance(value, dict) else {}
+        return value
+
+    def _existing_issue(self, title: str) -> dict[str, Any] | None:
+        value = self._request("GET", f"/repos/{self.repository}/issues?state=all&per_page=100")
+        if not isinstance(value, list):
+            raise ValueError("GitHub Issue listing response was not a list")
+        for item in value:
+            if isinstance(item, dict) and not item.get("pull_request") and item.get("title") == title and isinstance(item.get("number"), int):
+                return item
+        return None
 
     def publish(self, markdown: str, *, report_date: str) -> PublicationResult:
         try:
-            value = self._request("POST", f"/repos/{self.repository}/issues", {"title": f"PYGL Research Radar — {report_date}", "body": markdown})
+            title = f"PYGL Research Radar — {report_date}"
+            existing = self._existing_issue(title)
+            if existing:
+                number = int(existing["number"])
+                value = self._request("PATCH", f"/repos/{self.repository}/issues/{number}", {"body": markdown, "state": "open"})
+            else:
+                value = self._request("POST", f"/repos/{self.repository}/issues", {"title": title, "body": markdown})
+            if not isinstance(value, dict):
+                return PublicationResult(False, error="GitHub Issue response was not an object")
             url = str(value.get("html_url") or "")
             number = value.get("number")
             if not url or not isinstance(number, int):

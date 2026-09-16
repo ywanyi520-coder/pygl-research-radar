@@ -57,7 +57,10 @@ sources:
     max_results: 40
     # Keep the high-tier sweep focused on research articles.
     exclude_publication_types: [Editorial, News, Comment, Letter, Review]
-  prioritize_journals: [Nature, Cell, Science, "Nature Immunology", "Nature Metabolism", "Nature Communications", Immunity, "Cell Metabolism", PNAS]
+  journal_candidate_slots: 40
+  journal_per_venue_quota: 8
+  # Frozen high-tier journal sweep; names follow PubMed/NLM where applicable.
+  prioritize_journals: [Nature, Cell, Science, "Nature Immunology", "Nature Metabolism", "Nature Cell Biology", "Nature Medicine", "Nature Communications", Immunity, "Cell Metabolism", "Cell Reports Medicine", "Science Immunology", "Science Translational Medicine", "J Exp Med", "Proc Natl Acad Sci U S A"]
 
 triage:
   batch_size: 20
@@ -66,6 +69,7 @@ triage:
 fulltext:
   enabled: true
   min_text_chars: 200
+  min_html_text_chars: 2000
   timeout_seconds: 30
 
 scoring:

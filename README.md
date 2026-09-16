@@ -24,7 +24,7 @@ cp config.example.yaml config.yaml
 cp .env.example .env  # 只在本地使用；不要提交
 ```
 
-编辑 `config.yaml` 中的研究画像、来源上限、评分权重与输出目录。建议将 `config.yaml` 和 `.env` 保留在本地或通过部署环境注入。
+编辑 `config.yaml` 中的研究画像、冻结期刊、双 lane 配额、评分权重与输出目录。`journal_candidate_slots` 和 `journal_per_venue_quota` 保证高层期刊优先但不挤掉 topic lane；建议将 `config.yaml` 和 `.env` 保留在本地或通过部署环境注入。
 
 ## Local commands
 

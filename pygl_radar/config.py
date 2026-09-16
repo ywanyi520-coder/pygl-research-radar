@@ -24,26 +24,29 @@ DEFAULT_CONFIG: dict[str, Any] = {
         ],
         "keywords": ["macrophage", "efferocytosis", "phagosome", "lysosome", "glycogen"],
     },
-        "sources": {
+    "sources": {
         "window_hours": 48,
         "max_candidates": 80,
         "pubmed": {"enabled": True, "max_results": 80},
         "crossref": {"enabled": True, "max_results": 80},
-            "optional": {"biorxiv": False, "medrxiv": False, "europe_pmc": True},
-            "journal_lane": {
-                "enabled": True,
-                "max_results": 40,
-                "exclude_publication_types": ["Editorial", "News", "Comment", "Letter", "Review"],
-            },
+        "optional": {"biorxiv": False, "medrxiv": False, "europe_pmc": True},
+        "journal_lane": {
+            "enabled": True,
+            "max_results": 40,
+            "exclude_publication_types": ["Editorial", "News", "Comment", "Letter", "Review"],
+        },
+        "journal_candidate_slots": 40,
+        "journal_per_venue_quota": 8,
         "prioritize_journals": [
             "Nature", "Cell", "Science", "Nature Immunology", "Nature Metabolism",
             "Nature Cell Biology", "Nature Medicine", "Nature Communications",
             "Immunity", "Cell Metabolism", "Cell Reports Medicine",
-            "Science Immunology", "Science Translational Medicine", "J Exp Med", "PNAS",
+            "Science Immunology", "Science Translational Medicine", "J Exp Med",
+            "Proc Natl Acad Sci U S A",
         ],
     },
     "triage": {"batch_size": 20, "retain": 15},
-    "fulltext": {"enabled": True, "min_text_chars": 200, "timeout_seconds": 30},
+    "fulltext": {"enabled": True, "min_text_chars": 200, "min_html_text_chars": 2000, "timeout_seconds": 30},
     "scoring": {
         "weights": {
             "direct_relevance": 0.12,

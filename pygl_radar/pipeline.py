@@ -67,12 +67,70 @@ def _within_window(paper: Paper, now: datetime, hours: int) -> bool:
     return current - timedelta(hours=hours) <= value <= current
 
 
+def _preferred_journal(paper: Paper, config: dict[str, Any]) -> str:
+    preferred = sorted(
+        (str(journal).casefold() for journal in config.get("sources", {}).get("prioritize_journals", []) if str(journal).strip()),
+        key=len,
+        reverse=True,
+    )
+    journal = paper.journal.casefold()
+    return next((name for name in preferred if name in journal), "")
+
+
+def _is_journal_lane(paper: Paper) -> bool:
+    return any(str(source).endswith("-journal") for source in paper.sources)
+
+
 def _candidate_order(papers: list[Paper], config: dict[str, Any]) -> list[Paper]:
-    preferred = {str(journal).casefold() for journal in config.get("sources", {}).get("prioritize_journals", [])}
     def sort_key(paper: Paper) -> tuple[int, str]:
-        preferred_hit = int(any(name and name in paper.journal.casefold() for name in preferred))
+        preferred_hit = int(bool(_preferred_journal(paper, config)))
         return preferred_hit, str(paper.publication_date or "")
     return sorted(papers, key=sort_key, reverse=True)
+
+
+def _stratified_cap(papers: list[Paper], config: dict[str, Any]) -> list[Paper]:
+    """Reserve candidate capacity for both discovery lanes after deduplication."""
+    source_settings = config.get("sources", {})
+    max_candidates = max(0, int(source_settings.get("max_candidates", 80)))
+    if len(papers) <= max_candidates:
+        return papers
+    journal_slot_cap = min(max_candidates, max(0, int(source_settings.get("journal_candidate_slots", max_candidates // 2))))
+    topic_slot_cap = max_candidates - journal_slot_cap
+    journal_quota = max(1, int(source_settings.get("journal_per_venue_quota", max(1, journal_slot_cap // 5))))
+    journals = [paper for paper in papers if _is_journal_lane(paper)]
+    topics = [paper for paper in papers if not _is_journal_lane(paper)]
+    selected_journals: list[Paper] = []
+    venue_counts: dict[str, int] = {}
+    for paper in journals:
+        venue = _preferred_journal(paper, config) or paper.journal.casefold() or "unknown"
+        if venue_counts.get(venue, 0) >= journal_quota:
+            continue
+        selected_journals.append(paper)
+        venue_counts[venue] = venue_counts.get(venue, 0) + 1
+        if len(selected_journals) >= journal_slot_cap:
+            break
+    selected_topics = topics[:topic_slot_cap]
+    selected = selected_journals + selected_topics
+    # Backfill an unused reserved lane only from the opposite lane. Do not
+    # relax the per-venue quota merely because one venue is high-volume.
+    remaining = max_candidates - len(selected)
+    if remaining and len(selected_journals) < journal_slot_cap:
+        extra_topics = topics[topic_slot_cap : topic_slot_cap + remaining]
+        selected.extend(extra_topics)
+        remaining -= len(extra_topics)
+    if remaining and len(selected_topics) < topic_slot_cap:
+        selected_ids = {id(paper) for paper in selected_journals}
+        for paper in journals:
+            venue = _preferred_journal(paper, config) or paper.journal.casefold() or "unknown"
+            if id(paper) in selected_ids or venue_counts.get(venue, 0) >= journal_quota:
+                continue
+            selected.append(paper)
+            selected_ids.add(id(paper))
+            venue_counts[venue] = venue_counts.get(venue, 0) + 1
+            remaining -= 1
+            if not remaining:
+                break
+    return selected[:max_candidates]
 
 
 def _notifier(dry_run: bool, notifier: Notifier | None) -> Notifier:
@@ -132,7 +190,7 @@ def run_radar(
     window_hours = int(config.get("sources", {}).get("window_hours", 48))
     candidates = [paper for paper in candidates if _within_window(paper, now, window_hours)]
     unique = deduplicate_papers(_candidate_order(candidates, config))
-    unique = unique[: int(config.get("sources", {}).get("max_candidates", 80))]
+    unique = _stratified_cap(unique, config)
     seen = SeenCache(resolve_path(config, "seen_cache", default="state/seen.json"))
     unseen = [paper for paper in unique if not seen.contains(paper)]
     profile = config.get("profile", {})
@@ -148,6 +206,7 @@ def run_radar(
         http=http,
         timeout=float(config.get("fulltext", {}).get("timeout_seconds", 30)),
         min_text_chars=int(config.get("fulltext", {}).get("min_text_chars", 200)),
+        min_html_text_chars=int(config.get("fulltext", {}).get("min_html_text_chars", 2000)),
     )
     review_client = client_from_env("RADAR_REVIEW_MODEL", timeout=120)
     reviewed = 0

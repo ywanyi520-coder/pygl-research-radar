@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import re
 from typing import Any, Iterable
 
@@ -10,6 +11,19 @@ from .models import Paper
 logger = logging.getLogger(__name__)
 
 TRIAGE_FIELDS = ("direct_relevance", "mechanism_relevance", "experimental_similarity", "transferability", "idea_value", "evidence_quality")
+
+
+def _controlled_tags(values: Any, vocabulary: list[Any]) -> list[str]:
+    """Whitelist LLM tags against the frozen profile vocabulary."""
+    if not isinstance(values, list):
+        return []
+    allowed = {re.sub(r"\s+", " ", str(value).casefold()).strip(): str(value) for value in vocabulary if str(value).strip()}
+    result: list[str] = []
+    for value in values:
+        key = re.sub(r"\s+", " ", str(value).casefold()).strip()
+        if key in allowed:
+            result.append(allowed[key])
+    return list(dict.fromkeys(result))
 
 
 def _clamp(value: Any, default: float = 0.0) -> float:
@@ -67,12 +81,16 @@ def _prompt(papers: list[Paper], profile: dict[str, Any]) -> str:
         records.append({"index": index, "title": paper.title, "abstract": paper.abstract[:6000]})
     return (
         "你是生物医学文献初筛器。只根据给出的题名和摘要判断，不得补写全文细节。\n"
-        "研究画像：" + str(profile) + "\n"
+        "研究画像：" + json.dumps(profile, ensure_ascii=False, sort_keys=True) + "\n"
         "实验模式优先于关键词重合；即使没有出现 PYGL，只要因果/实验结构可迁移也可保留。\n"
-        "对每篇返回 0-100 的六个分数，并返回 retain、rationale。只输出 JSON："
+        "matched_mechanisms 和 matched_patterns 必须从下列 profile 原词表逐字选择（允许大小写差异，禁止创造新标签）；语义相似时也要返回对应控制标签。\n"
+        "机制词表：" + json.dumps(profile.get("mechanisms", []), ensure_ascii=False) + "\n"
+        "实验模式词表：" + json.dumps(profile.get("experimental_patterns", []), ensure_ascii=False) + "\n"
+        "对每篇返回 0-100 的六个分数，并返回 retain、rationale、matched_mechanisms、matched_patterns。只输出 JSON："
         "{\"items\":[{\"index\":0,\"retain\":true,\"direct_relevance\":0,"
         "\"mechanism_relevance\":0,\"experimental_similarity\":0,\"transferability\":0,"
-        "\"idea_value\":0,\"evidence_quality\":0,\"rationale\":\"...\"}]}\n"
+        "\"idea_value\":0,\"evidence_quality\":0,\"rationale\":\"...\","
+        "\"matched_mechanisms\":[],\"matched_patterns\":[]}]}\n"
         + str(records)
     )
 
@@ -105,6 +123,14 @@ def triage_batch(papers: Iterable[Paper], profile: dict[str, Any], client: LLMCl
                 triage.update({field: _clamp(candidate.get(field), triage[field]) for field in TRIAGE_FIELDS})
                 triage["retain"] = bool(candidate.get("retain", triage["retain"]))
                 triage["rationale"] = str(candidate.get("rationale") or triage["rationale"])
+                tag_source = "deterministic-fallback"
+                if "matched_mechanisms" in candidate:
+                    triage["matched_mechanisms"] = _controlled_tags(candidate.get("matched_mechanisms"), list(profile.get("mechanisms", [])))
+                    tag_source = "llm-controlled"
+                if "matched_patterns" in candidate:
+                    triage["matched_patterns"] = _controlled_tags(candidate.get("matched_patterns"), list(profile.get("experimental_patterns", [])))
+                    tag_source = "llm-controlled"
+                triage["tag_source"] = tag_source
                 triage["model"] = getattr(client, "model", "configured-llm")
             paper.triage = triage
             if triage.get("retain"):

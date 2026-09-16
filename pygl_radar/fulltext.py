@@ -46,7 +46,7 @@ def _xml_or_html_text(body: str | bytes) -> str:
 
 
 def _pdf_text(body: str | bytes) -> str:
-    """Extract PDF text when an optional extractor is installed."""
+    """Extract PDF text with PyMuPDF when available, otherwise declared pypdf."""
     raw = body if isinstance(body, bytes) else body.encode("latin1", errors="ignore")
     with tempfile.NamedTemporaryFile(suffix=".pdf") as handle:
         handle.write(raw)
@@ -88,20 +88,23 @@ def _is_article_html(body: str | bytes) -> bool:
     lowered = value.casefold()
     marker_count = sum(marker in lowered for marker in ARTICLE_BODY_MARKERS)
     headings = len(re.findall(r"<h[1-6]\b|<section\b|<div[^>]+class=[\"'][^\"']*(?:section|article)[^\"']*[\"']", lowered))
-    return marker_count >= 1 and headings >= 2
+    named_section = bool(re.search(r"<(?:h[1-6]|section|div)[^>]*>[^<]*(?:results|methods?|materials|discussion|conclusions?|limitations)[^<]*<", lowered, re.I | re.S))
+    return marker_count >= 1 and headings >= 2 and named_section
 
 
 class FulltextAcquirer:
     """Lawful OA-only acquisition chain; never bypasses a paywall or anti-bot gate."""
 
-    def __init__(self, http: HTTPClient | None = None, *, timeout: float = 30.0, min_text_chars: int = 200, min_pdf_text_chars: int | None = None):
+    def __init__(self, http: HTTPClient | None = None, *, timeout: float = 30.0, min_text_chars: int = 200, min_pdf_text_chars: int | None = None, min_html_text_chars: int | None = None):
         self.http = http or HTTPClient(timeout=timeout)
         self.min_text_chars = min_text_chars
         self.min_pdf_text_chars = min_pdf_text_chars if min_pdf_text_chars is not None else max(800, min_text_chars)
+        self.min_html_text_chars = min_html_text_chars if min_html_text_chars is not None else max(2000, min_text_chars)
 
     def _url(self, url: str, *, mode: str) -> FulltextResult | None:
         get_binary = getattr(self.http, "get_binary", None)
-        response = get_binary(url) if get_binary and (url.casefold().split("?")[0].endswith(".pdf") or "pdf" in url.casefold()) else self.http.get_text(url)
+        # Binary-first prevents a PDF with a non-.pdf URL from being UTF-8 decoded.
+        response = get_binary(url) if get_binary else self.http.get_text(url)
         if response.status < 200 or response.status >= 300 or not response.body:
             return None
         if _blocked(response.body):
@@ -115,7 +118,7 @@ class FulltextAcquirer:
         else:
             # Unpaywall landing pages are not evidence.  HTML must expose an
             # article-body/section structure before it can be considered OA text.
-            valid = _is_article_html(response.body) and len(text) >= self.min_text_chars
+            valid = _is_article_html(response.body) and len(text) >= self.min_html_text_chars
         if not valid:
             return None
         return FulltextResult("FULLTEXT_READ", text, url, mode, "retrieved and parsed")
