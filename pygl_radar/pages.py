@@ -167,7 +167,17 @@ def _safe_paper(data: dict[str, Any]) -> dict[str, Any]:
     }
     scores = data.get("scores") if isinstance(data.get("scores"), dict) else {}
     result["scores"] = {key: max(0.0, min(100.0, _number(scores.get(key)))) for key, _ in SCORE_FIELDS}
-    review = data.get("review") if isinstance(data.get("review"), dict) else {}
+    # Legacy production reports use ``review``.  Codex reports intentionally
+    # keep their public journal-club contract flat, with no second source of
+    # truth.  Map the latter into the five compact card fields deterministically.
+    nested_review = data.get("review") if isinstance(data.get("review"), dict) else {}
+    review = nested_review or {
+        "core_finding": data.get("central_hypothesis"),
+        "why_recommended": data.get("topic_mapping"),
+        "mechanism_mapping": data.get("causal_chain"),
+        "transferable_strategy": data.get("study_design"),
+        "new_hypothesis": data.get("supervisor_brief"),
+    }
     for field in REVIEW_FIELDS:
         value = _safe_text(review.get(field))
         if result["evidence_level"] == "ABSTRACT_ONLY":
@@ -182,8 +192,17 @@ def _safe_report(raw: dict[str, Any], date_hint: str) -> dict[str, Any] | None:
         return None
     stats_raw = raw.get("stats") if isinstance(raw.get("stats"), dict) else {}
     stats: dict[str, Any] = {}
+    aliases = {
+        "retrieved": "candidate_pool",
+        "deduplicated": "candidate_pool",
+        "triaged": "shortlist",
+        "reviewed": "shortlist",
+        "fulltext_reviewed": "FULLTEXT_READ",
+        "recommended": "recommended",
+    }
     for key in ("retrieved", "deduplicated", "triaged", "reviewed", "fulltext_reviewed", "recommended"):
-        stats[key] = int(max(0.0, _number(stats_raw.get(key))))
+        fallback = (stats_raw.get("evidence", {}) or {}).get("FULLTEXT_READ") if aliases[key] == "FULLTEXT_READ" else stats_raw.get(aliases[key])
+        stats[key] = int(max(0.0, _number(stats_raw.get(key, fallback))))
     evidence = stats_raw.get("evidence") if isinstance(stats_raw.get("evidence"), dict) else {}
     stats["evidence"] = {key: int(max(0.0, _number(evidence.get(key)))) for key in ("FULLTEXT_READ", "ABSTRACT_ONLY")}
     for key in ("issue_url", "pages_url"):

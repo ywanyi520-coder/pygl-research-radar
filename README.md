@@ -40,9 +40,9 @@ python -m pygl_radar --config config.example.yaml --fixture fixtures/sample_pape
 python -m pygl_radar --config config.yaml
 ```
 
-## Codex-native comparison mode
+## Codex-native primary mode
 
-Codex Automation 是与现有 DeepSeek/OpenAI-compatible GitHub Actions 流水线并行的独立研究模式；它不替换生产 cron、API credentials、评分权重、期刊列表或冻结研究画像。建议在 GitHub Actions 约 08:30（Asia/Shanghai）之后，于 **08:45 Asia/Shanghai** 运行 Codex Automation，比较两条链路的论文选择和证据解释质量。
+Codex Automation 是每日主要科研分析链路：它在 **08:45 Asia/Shanghai** 完成候选检索、实验逻辑优先的 triage、合规 OA hydration、Top 3–5 journal-club 深读和本地验证，然后只提交脱敏的 `codex-output/YYYY-MM-DD.json` 与 `.md`。GitHub Actions 随后只做确定性的 Pages 归档和一条简短 WeChat 入口通知；Codex 不接触任何 WeChat credential。原有 DeepSeek/OpenAI-compatible 流水线保留为 `workflow_dispatch` 手动 benchmark/fallback，不再每天自动运行。
 
 准备阶段不创建或调用任何 LLM API client，继续复用现有 PubMed/Crossref 双 lane、48 小时窗口、去重、期刊配额、candidate cap、seen-state 和可用的 GitHub feedback ingestion：
 
@@ -62,7 +62,7 @@ python -m pygl_radar codex-hydrate \
 python -m pygl_radar codex-validate --workspace work/YYYY-MM-DD
 ```
 
-只有验证成功才会生成可比较的 `codex-output/YYYY-MM-DD.json` 和 `.md`。输出带有 `review_provider=codex-automation`、`review_mode=codex-native`，严格移除 raw full text；`work/` 不会提交，也不会复制到 GitHub Pages。完整的短 Automation prompt、权限边界、证据模式和失败处理见 [`docs/CODEX_AUTOMATION_PROMPT.md`](docs/CODEX_AUTOMATION_PROMPT.md)。
+只有验证成功才会生成可发布的 `codex-output/YYYY-MM-DD.json` 和 `.md`。JSON 是唯一的 Pages 数据源，`.md` 是 GitHub 上的人类可读 fallback。输出带有 `review_provider=codex-automation`、`review_mode=codex-native`，严格移除 raw full text；`work/` 不会提交，也不会复制到 GitHub Pages。完整的 Automation prompt、权限边界、证据模式和失败处理见 [`docs/CODEX_AUTOMATION_PROMPT.md`](docs/CODEX_AUTOMATION_PROMPT.md)。
 
 ## Web Dashboard / GitHub Pages
 
@@ -79,7 +79,7 @@ python -m pygl_radar codex-validate --workspace work/YYYY-MM-DD
 ### 首次启用 Pages
 
 1. 在仓库 **Settings → Pages** 将 Source 设为 **GitHub Actions**，并允许 Actions 使用 Pages environment。
-2. 合并本 PR 后手动运行一次 `PYGL Research Radar daily scan` 的 `workflow_dispatch`，或等待下一次 schedule；PR CI 只 build，不会发布。
+2. 合并本 PR 后，首次成功的 Codex Automation 只提交一个通过校验的 `codex-output/YYYY-MM-DD.json` + `.md` 对；`Publish validated Codex report` 会自动部署 Pages。PR CI 只 build/test，不会发布。
 3. 如果使用自定义域名，在 **Settings → Pages → Custom domain** 填入 `radar.example.com`；在 DNS 服务商添加 `radar` 的 CNAME，目标为 `ywanyi520-coder.github.io`（不包含仓库名）。
 4. 在 **Settings → Secrets and variables → Actions → Variables** 设置 `PUBLIC_SITE_URL=https://radar.example.com`。
 5. GitHub 验证 DNS 后，在 Pages 设置中启用 HTTPS。Actions workflow 不生成或依赖 `CNAME` 文件。
@@ -100,7 +100,7 @@ pytest
 
 ## GitHub Actions secrets
 
-`.github/workflows/daily-radar.yml` 每日 `00:30 UTC` 运行，即北京时间 08:30，并支持 `workflow_dispatch`。需要在仓库 Settings → Secrets and variables → Actions 中配置：
+`.github/workflows/publish-codex-report.yml` 只在 `main` 收到经过提交边界校验的 `codex-output/*.json` 时运行：它不调用 LLM、PubMed、Crossref 或 DeepSeek，且 site/ 历史回写不会递归触发。`.github/workflows/daily-radar.yml` 现在只支持 `workflow_dispatch`，作为 DeepSeek 手动 fallback。需要在仓库 Settings → Secrets and variables → Actions 中配置：
 
 | Secret | 用途 |
 | --- | --- |
@@ -114,7 +114,7 @@ pytest
 | `RADAR_REVIEW_MODEL` | 可选，深度复核模型名 |
 | `UNPAYWALL_EMAIL` | 可选，启用 Unpaywall 合规 OA 查询所需的联系邮箱 |
 
-不要把 AppID、AppSecret、OpenID、模板 ID、模型 key 或邮箱写入代码、YAML、fixture、日志或 PR。Workflow 使用 Actions cache 保存成功推送的 DOI/PMID 与反馈状态，报告同时发布为 GitHub Issue 并上传为 artifact；PR 会运行无 secrets 的 pytest 与 Pages build CI，生产 radar → Pages → WeChat 依次执行，生产运行有 concurrency 锁，PR 事件不会 deploy。Pages 失败时通知回退到当日 Issue，radar 与 Issue/feedback 状态不回滚。
+不要把 AppID、AppSecret、OpenID、模板 ID、模型 key 或邮箱写入代码、YAML、fixture、日志或 PR。Codex 绝不访问或存储四个 WeChat 值；只有 Actions 的 notification job 通过 `${{ secrets.* }}` 读取它们。Codex JSON 先由确定性 publish-check 再次验证，Pages 失败时通知回退到该提交不可变的 GitHub Markdown 报告；校验失败时不部署也不发送日报通知。
 
 微信 notifier 是独立抽象。`MockNotifier` 用于 dry-run 和测试；`WeChatNotifier` 使用官方测试账号/模板消息接口，token 与发送错误不会把 secret 或 token 写入日志。
 

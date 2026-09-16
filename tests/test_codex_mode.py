@@ -11,8 +11,10 @@ from pygl_radar.codex_mode import (
     CodexModeError,
     hydrate_codex_workspace,
     prepare_codex_workspace,
+    validate_publishable_codex_report,
     validate_codex_workspace,
 )
+from pygl_radar.codex_publishing import render_codex_wechat_message
 from pygl_radar.config import DEFAULT_CONFIG
 from pygl_radar.fulltext import FulltextResult
 from pygl_radar.models import Paper
@@ -198,7 +200,46 @@ def test_valid_codex_output_is_sanitized_and_provenanced(tmp_path: Path):
     assert data["review_provider"] == "codex-automation"
     assert data["review_mode"] == "codex-native"
     assert data["papers"][0]["evidence_level"] == "ABSTRACT_ONLY"
+    assert {"title", "journal", "publication_date", "doi", "pmid", "evidence_level", "final_score", "background", "knowledge_gap", "scientific_question", "central_hypothesis", "study_design", "innovations", "figure_walkthrough", "key_controls_and_rescues", "causal_chain", "strengths", "limitations", "topic_mapping", "actionable_ideas", "do_not_overclaim", "supervisor_brief"}.issubset(data["papers"][0])
+    assert "review" not in data["papers"][0]
     assert result["markdown"].exists()
+
+
+def test_publishable_codex_report_revalidates_the_sanitized_contract(tmp_path: Path):
+    config, manifest, workspace = _prepare(tmp_path)
+    paper_id = manifest["candidate_ids"][0]
+    _hydrate_fixture(workspace, [paper_id])
+    _write_review(workspace, [_review(paper_id, "Conditioned medium fractionation identifies a soluble ligand that restores post-engulfment lysosome maturation")])
+    result = validate_codex_workspace(workspace, profile=config["profile"], output_root=tmp_path / "codex-output")
+    report = validate_publishable_codex_report(result["json"])
+    assert report["stats"]["recommended"] == 1
+    assert "完整科研拆解" in render_codex_wechat_message(report, report_url="https://example.test/latest/")
+
+
+def test_raw_evidence_cannot_enter_publishable_codex_output(tmp_path: Path):
+    config, manifest, workspace = _prepare(tmp_path)
+    paper_id = manifest["candidate_ids"][0]
+    _hydrate_fixture(workspace, [paper_id])
+    _write_review(workspace, [_review(paper_id, "Conditioned medium fractionation identifies a soluble ligand that restores post-engulfment lysosome maturation")])
+    result = validate_codex_workspace(workspace, profile=config["profile"], output_root=tmp_path / "codex-output")
+    report = json.loads(result["json"].read_text(encoding="utf-8"))
+    report["papers"][0]["parsed_text"] = "raw full text must never publish"
+    result["json"].write_text(json.dumps(report), encoding="utf-8")
+    with pytest.raises(CodexModeError, match="non-sanitized|raw evidence"):
+        validate_publishable_codex_report(result["json"])
+
+
+def test_invalid_codex_output_fails_the_publish_boundary(tmp_path: Path):
+    config, manifest, workspace = _prepare(tmp_path)
+    paper_id = manifest["candidate_ids"][0]
+    _hydrate_fixture(workspace, [paper_id])
+    _write_review(workspace, [_review(paper_id, "Conditioned medium fractionation identifies a soluble ligand that restores post-engulfment lysosome maturation")])
+    result = validate_codex_workspace(workspace, profile=config["profile"], output_root=tmp_path / "codex-output")
+    report = json.loads(result["json"].read_text(encoding="utf-8"))
+    report["papers"][0]["final_score"] = 101
+    result["json"].write_text(json.dumps(report), encoding="utf-8")
+    with pytest.raises(CodexModeError, match="between 0 and 100"):
+        validate_publishable_codex_report(result["json"])
 
 
 def test_offline_prepare_hydrate_validate_smoke_with_fulltext_mode(tmp_path: Path):

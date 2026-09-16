@@ -56,6 +56,24 @@ DETAILED_LIST_FIELDS = (
     "do_not_overclaim",
 )
 DETAILED_FIELDS = DETAILED_TEXT_FIELDS + DETAILED_LIST_FIELDS
+PUBLISHABLE_METADATA_FIELDS = (
+    "paper_id",
+    "title",
+    "journal",
+    "publication_date",
+    "doi",
+    "pmid",
+    "pmcid",
+    "authors",
+    "publisher_url",
+    "lawful_oa_urls",
+    "discovery_lane",
+    "evidence_level",
+    "figure_evidence_mode",
+    "scores",
+    "final_score",
+)
+PUBLISHABLE_PAPER_FIELDS = PUBLISHABLE_METADATA_FIELDS + DETAILED_FIELDS
 FIGURE_FIELDS = (
     "figure",
     "question",
@@ -113,6 +131,9 @@ ABSTRACT_GUARDRAILS = (
     re.compile(r"\b\d+(?:\.\d+)?\s*(?:hours?|hrs?|minutes?|mins?)\b", re.I),
     re.compile(r"\b(?:incubat(?:ed|ion)|western\s+blot|immunoblot|flow\s+cytometry|confocal|transfection)\b", re.I),
 )
+MAX_PUBLISHABLE_REPORT_BYTES = 1_000_000
+MAX_PUBLISHABLE_TEXT_CHARS = 20_000
+UNSAFE_PUBLISHABLE_TEXT = re.compile(r"<\s*(?:script|iframe|object|embed)\b|\bon[a-z]+\s*=|javascript\s*:", re.I)
 
 
 class CodexModeError(ValueError):
@@ -230,7 +251,7 @@ def build_codex_instructions(report_date: str, profile: dict[str, Any]) -> str:
     )
     return f"""# PYGL Research Radar — Codex-native run {report_date}
 
-This is a local comparison run. Read the full candidate pool in `candidates.json` before semantic triage. Do not call or configure the DeepSeek/OpenAI-compatible API and do not modify production Python, configuration, tests, GitHub Actions, Pages, Issue, or notifier files.
+This is the primary local scientific-analysis run. Read the full candidate pool in `candidates.json` before semantic triage. Do not call or configure the DeepSeek/OpenAI-compatible API and do not modify production Python, configuration, tests, GitHub Actions, Pages, Issue, or notifier files.
 
 ## Frozen PYGL research profile
 
@@ -597,7 +618,9 @@ def _sanitized_paper(paper: dict[str, Any], candidate: dict[str, Any], evidence_
     result["figure_evidence_mode"] = str(paper.get("figure_evidence_mode", review.get("figure_evidence_mode", "")))
     result["scores"] = {field: float(scores[field]) for field in SCORE_FIELDS}
     result["final_score"] = float(paper["final_score"])
-    result["review"] = {field: _public_value(review.get(field)) for field in DETAILED_FIELDS}
+    # The public JSON has one canonical representation: detailed fields live at
+    # the paper level rather than being duplicated under ``review``.
+    result.update({field: _public_value(review.get(field)) for field in DETAILED_FIELDS})
     for optional in ("matched_mechanisms", "matched_patterns"):
         values = paper.get(optional, review.get(optional))
         if values is not None:
@@ -614,7 +637,6 @@ def _render_codex_markdown(report: dict[str, Any]) -> str:
         "",
     ]
     for index, paper in enumerate(report["papers"], 1):
-        review = paper["review"]
         lines.extend([
             f"## {index}. {paper['title']}",
             f"- {paper.get('journal') or '期刊未提供'} · {paper.get('publication_date') or '日期未提供'} · evidence: **{paper['evidence_level']}**",
@@ -630,10 +652,10 @@ def _render_codex_markdown(report: dict[str, Any]) -> str:
             "",
         ])
         for field in DETAILED_TEXT_FIELDS:
-            lines.extend([f"### {field}", str(review.get(field) or "NOT_EVALUABLE"), ""])
+            lines.extend([f"### {field}", str(paper.get(field) or "NOT_EVALUABLE"), ""])
         for field in DETAILED_LIST_FIELDS:
             lines.append(f"### {field}")
-            values = review.get(field) or []
+            values = paper.get(field) or []
             if not isinstance(values, list) or not values:
                 lines.append("- NOT_EVALUABLE")
             else:
@@ -645,6 +667,145 @@ def _render_codex_markdown(report: dict[str, Any]) -> str:
             lines.append("")
         lines.append("---\n")
     return "\n".join(lines)
+
+
+def _publishable_text(value: Any, *, label: str) -> str:
+    if not isinstance(value, str):
+        raise CodexModeError(f"{label} must be a string")
+    if len(value) > MAX_PUBLISHABLE_TEXT_CHARS:
+        raise CodexModeError(f"{label} exceeds the publishable text limit")
+    if UNSAFE_PUBLISHABLE_TEXT.search(value):
+        raise CodexModeError(f"{label} contains executable HTML or URL content")
+    return value
+
+
+def _validate_publishable_value(value: Any, *, label: str) -> None:
+    """Validate a sanitized value without using a model, network, or workspace."""
+    if isinstance(value, str):
+        _publishable_text(value, label=label)
+        return
+    if value is None or isinstance(value, (int, float, bool)):
+        return
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            _validate_publishable_value(item, label=f"{label}[{index}]")
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if str(key).casefold() in RAW_TEXT_KEYS:
+                raise CodexModeError(f"{label} contains raw evidence key: {key}")
+            _validate_publishable_value(item, label=f"{label}.{key}")
+        return
+    raise CodexModeError(f"{label} contains an unsupported value")
+
+
+def _validate_publishable_paper(paper: Any, *, index: int) -> None:
+    if not isinstance(paper, dict):
+        raise CodexModeError(f"papers[{index}] must be an object")
+    keys = set(paper)
+    required = set(PUBLISHABLE_PAPER_FIELDS)
+    missing = required - keys
+    unexpected = keys - required - {"matched_mechanisms", "matched_patterns"}
+    if missing:
+        raise CodexModeError(f"papers[{index}] misses required field: {sorted(missing)[0]}")
+    if unexpected:
+        raise CodexModeError(f"papers[{index}] contains non-sanitized field: {sorted(unexpected)[0]}")
+    for field in ("paper_id", "title", "journal", "publication_date", "evidence_level", "figure_evidence_mode"):
+        _publishable_text(paper[field], label=f"papers[{index}].{field}")
+    if not str(paper["paper_id"]).strip() or not str(paper["title"]).strip():
+        raise CodexModeError(f"papers[{index}] requires a paper_id and title")
+    if not DATE_RE.fullmatch(str(paper["publication_date"])):
+        raise CodexModeError(f"papers[{index}] has an invalid publication_date")
+    if paper["evidence_level"] not in EVIDENCE_LEVELS:
+        raise CodexModeError(f"papers[{index}] has an invalid evidence_level")
+    if paper["figure_evidence_mode"] not in FIGURE_EVIDENCE_MODES:
+        raise CodexModeError(f"papers[{index}] has an invalid figure_evidence_mode")
+    if paper["evidence_level"] == "ABSTRACT_ONLY" and paper["figure_evidence_mode"] != "ABSTRACT_ONLY":
+        raise CodexModeError(f"papers[{index}] has inconsistent ABSTRACT_ONLY figure evidence")
+    scores = paper.get("scores")
+    if not isinstance(scores, dict) or set(scores) != set(SCORE_FIELDS):
+        raise CodexModeError(f"papers[{index}] must contain exactly six scores")
+    for field in SCORE_FIELDS:
+        _finite_score(scores[field], label=f"papers[{index}].scores.{field}")
+    _finite_score(paper["final_score"], label=f"papers[{index}].final_score")
+    for field in ("doi", "pmid", "pmcid", "publisher_url", "discovery_lane"):
+        value = paper.get(field)
+        if value is not None:
+            _publishable_text(value, label=f"papers[{index}].{field}")
+    if not isinstance(paper.get("authors"), list) or not isinstance(paper.get("lawful_oa_urls"), list):
+        raise CodexModeError(f"papers[{index}] has invalid metadata lists")
+    _validate_publishable_value(paper["authors"], label=f"papers[{index}].authors")
+    _validate_publishable_value(paper["lawful_oa_urls"], label=f"papers[{index}].lawful_oa_urls")
+    for field in ("matched_mechanisms", "matched_patterns"):
+        if field in paper:
+            _validate_publishable_value(paper[field], label=f"papers[{index}].{field}")
+    for field in DETAILED_TEXT_FIELDS:
+        _publishable_text(paper[field], label=f"papers[{index}].{field}")
+    for field in DETAILED_LIST_FIELDS:
+        if not isinstance(paper[field], list):
+            raise CodexModeError(f"papers[{index}].{field} must be a list")
+        _validate_publishable_value(paper[field], label=f"papers[{index}].{field}")
+    if paper["evidence_level"] == "ABSTRACT_ONLY":
+        if paper["figure_walkthrough"]:
+            raise CodexModeError(f"papers[{index}] cannot publish figure claims under ABSTRACT_ONLY")
+        if "not_evaluable" not in paper["figure_limitations"].casefold():
+            raise CodexModeError(f"papers[{index}] must mark ABSTRACT_ONLY figure limits NOT_EVALUABLE")
+
+
+def validate_publishable_codex_report(report_path: str | Path) -> dict[str, Any]:
+    """Validate a committed Codex JSON report at the GitHub publishing boundary.
+
+    This validator intentionally consumes only a local JSON file.  It neither
+    opens a workspace nor imports a model, retrieval client, or full-text data.
+    """
+    path = Path(report_path)
+    if not DATE_RE.fullmatch(path.stem) or path.suffix != ".json":
+        raise CodexModeError("publishable Codex report filename must be YYYY-MM-DD.json")
+    try:
+        if path.stat().st_size > MAX_PUBLISHABLE_REPORT_BYTES:
+            raise CodexModeError("publishable Codex report exceeds size limit")
+    except OSError as exc:
+        raise CodexModeError(f"cannot read publishable Codex report: {path}") from exc
+    report = _read_json(path)
+    if not isinstance(report, dict):
+        raise CodexModeError("publishable Codex report must be an object")
+    allowed = {"version", "date", "review_provider", "review_mode", "profile_digest", "stats", "papers"}
+    missing = {"version", "date", "review_provider", "review_mode", "stats", "papers"} - set(report)
+    unexpected = set(report) - allowed
+    if missing or unexpected:
+        label = sorted(missing or unexpected)[0]
+        raise CodexModeError(f"publishable Codex report has an invalid top-level field: {label}")
+    if report["version"] != 1 or report["date"] != path.stem or not DATE_RE.fullmatch(str(report["date"])):
+        raise CodexModeError("publishable Codex report version/date is invalid")
+    if report["review_provider"] != "codex-automation" or report["review_mode"] != "codex-native":
+        raise CodexModeError("publishable Codex report has invalid provenance")
+    _publishable_text(str(report.get("profile_digest", "")), label="profile_digest")
+    stats = report.get("stats")
+    if not isinstance(stats, dict) or set(stats) != {"candidate_pool", "shortlist", "recommended", "evidence"}:
+        raise CodexModeError("publishable Codex report has invalid stats")
+    for field in ("candidate_pool", "shortlist", "recommended"):
+        if isinstance(stats[field], bool) or not isinstance(stats[field], int) or stats[field] < 0:
+            raise CodexModeError(f"publishable Codex report stats.{field} must be a non-negative integer")
+    evidence = stats.get("evidence")
+    if not isinstance(evidence, dict) or set(evidence) != EVIDENCE_LEVELS:
+        raise CodexModeError("publishable Codex report has invalid evidence stats")
+    if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in evidence.values()):
+        raise CodexModeError("publishable Codex report evidence stats must be non-negative integers")
+    papers = report.get("papers")
+    if not isinstance(papers, list) or len(papers) > 5 or stats["recommended"] != len(papers):
+        raise CodexModeError("publishable Codex report has an invalid final-paper count")
+    if stats["shortlist"] > stats["candidate_pool"] or stats["recommended"] > stats["shortlist"]:
+        raise CodexModeError("publishable Codex report has inconsistent funnel counts")
+    if sum(evidence.values()) != stats["recommended"]:
+        raise CodexModeError("publishable Codex report evidence totals do not match recommendations")
+    paper_ids: set[str] = set()
+    for index, paper in enumerate(papers):
+        _validate_publishable_paper(paper, index=index)
+        paper_id = str(paper["paper_id"])
+        if paper_id in paper_ids:
+            raise CodexModeError("publishable Codex report repeats a paper_id")
+        paper_ids.add(paper_id)
+    return report
 
 
 def validate_codex_workspace(
@@ -749,5 +910,6 @@ __all__ = [
     "hydrate_codex_workspace",
     "prepare_codex_workspace",
     "stable_paper_id",
+    "validate_publishable_codex_report",
     "validate_codex_workspace",
 ]

@@ -9,8 +9,10 @@ from .codex_mode import (
     CodexModeError,
     hydrate_codex_workspace,
     prepare_codex_workspace,
+    validate_publishable_codex_report,
     validate_codex_workspace,
 )
+from .codex_publishing import send_codex_report_notification
 from .feedback import FeedbackState
 from .pipeline import notify_report, run_radar
 
@@ -40,6 +42,11 @@ def build_parser() -> argparse.ArgumentParser:
     validate = subparsers.add_parser("codex-validate", help="validate and publish sanitized Codex output")
     validate.add_argument("--workspace", required=True)
     validate.add_argument("--output-root", default="codex-output")
+    publish_check = subparsers.add_parser("codex-publish-check", help="deterministically validate a committed Codex report")
+    publish_check.add_argument("--report", required=True)
+    codex_notify = subparsers.add_parser("codex-notify", help="send a compact WeChat entry point for a validated Codex report")
+    codex_notify.add_argument("--report", required=True)
+    codex_notify.add_argument("--url", required=True)
     return parser
 
 
@@ -60,6 +67,16 @@ def main() -> int:
         if args.command == "codex-validate":
             result = validate_codex_workspace(args.workspace, output_root=args.output_root)
             print(f"Validated {result['papers']} papers: {result['json']}")
+            return 0
+        if args.command == "codex-publish-check":
+            report = validate_publishable_codex_report(args.report)
+            print(f"Publishable Codex report: {report['date']} ({len(report['papers'])} papers)")
+            return 0
+        if args.command == "codex-notify":
+            result = send_codex_report_notification(args.report, report_url=args.url, dry_run=args.dry_run)
+            if not result.ok:
+                parser.error(f"WeChat push failed: {result.error}")
+            print(f"Sent Codex report notification: {args.report}")
             return 0
     except (CodexModeError, FileNotFoundError, OSError) as exc:
         parser.error(str(exc))
