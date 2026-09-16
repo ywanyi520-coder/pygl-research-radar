@@ -77,6 +77,39 @@ def test_builds_latest_archive_and_permanent_daily_pages(tmp_path: Path):
     assert "Newest paper" in archive
 
 
+def test_pages_preserve_history_when_a_flat_codex_report_is_added(tmp_path: Path):
+    site = tmp_path / "site"
+    reports = site / "data" / "reports"
+    _write_report(reports, "2026-09-15", title="Existing archived report")
+    codex = {
+        "version": 1,
+        "date": "2026-09-16",
+        "review_provider": "codex-automation",
+        "review_mode": "codex-native",
+        "profile_digest": "fixture",
+        "stats": {"candidate_pool": 72, "shortlist": 12, "recommended": 1, "evidence": {"FULLTEXT_READ": 1, "ABSTRACT_ONLY": 0}},
+        "papers": [{
+            "paper_id": "doi:10.1234/codex", "title": "Codex canonical paper", "journal": "Nature", "publication_date": "2026-09-16",
+            "doi": "10.1234/codex", "pmid": "123", "pmcid": None, "authors": [], "publisher_url": "https://publisher.example/codex",
+            "lawful_oa_urls": [], "discovery_lane": "topic", "evidence_level": "FULLTEXT_READ", "figure_evidence_mode": "RESULTS_TEXT_ONLY",
+            "scores": {"direct_relevance": 30, "mechanism_relevance": 50, "experimental_similarity": 90, "transferability": 85, "idea_value": 80, "evidence_quality": 80}, "final_score": 76,
+            "background": "Background.", "knowledge_gap": "Gap.", "scientific_question": "Question?", "central_hypothesis": "Hypothesis.", "study_design": "Blockade and rescue.",
+            "innovations": ["Innovation."], "figure_walkthrough": [], "figure_limitations": "Images not inspected.", "key_controls_and_rescues": ["Rescue."],
+            "causal_chain": "Signal to processing.", "strengths": ["Strength."], "limitations": ["Limitation."], "topic_mapping": "Map cautiously to PYGL.",
+            "actionable_ideas": ["Test a bypass."], "do_not_overclaim": ["No proof."], "supervisor_brief": "Useful template.",
+        }],
+    }
+    (reports / "2026-09-16.json").write_text(json.dumps(codex), encoding="utf-8")
+
+    result = build_pages(reports, site)
+
+    assert result["report_dates"] == ["2026-09-16", "2026-09-15"]
+    assert (site / "reports" / "2026-09-15" / "index.html").exists()
+    latest = (site / "latest" / "index.html").read_text(encoding="utf-8")
+    assert "Codex canonical paper" in latest
+    assert "72" in latest and "12" in latest
+
+
 def test_page_contains_scores_evidence_notice_and_clickable_links(tmp_path: Path):
     reports = tmp_path / "reports"
     site = tmp_path / "site"

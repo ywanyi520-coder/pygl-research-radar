@@ -1,0 +1,156 @@
+name: Publish validated Codex report
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "codex-output/*.json"
+
+# A Pages-history commit touches only site/, which does not match the trigger
+# above. Together with the source-commit gate this prevents recursive runs.
+concurrency:
+  group: pygl-codex-publish-main
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    name: Validate Codex output and build Pages
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
+    outputs:
+      report_json: ${{ steps.report.outputs.report_json }}
+      report_markdown: ${{ steps.report.outputs.report_markdown }}
+      report_date: ${{ steps.report.outputs.report_date }}
+      fallback_url: ${{ steps.report.outputs.fallback_url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - name: Reject mixed-source publish commits
+        env:
+          EVENT_BEFORE: ${{ github.event.before }}
+        run: |
+          git diff --name-only "$EVENT_BEFORE" "$GITHUB_SHA" > changed-files.txt
+          test -s changed-files.txt
+          while IFS= read -r path; do
+            case "$path" in
+              codex-output/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9].json|codex-output/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9].md) ;;
+              *) echo "Refusing mixed publish commit path: $path" >&2; exit 1 ;;
+            esac
+          done < changed-files.txt
+          grep -Eq '^codex-output/[0-9]{4}-[0-9]{2}-[0-9]{2}\.json$' changed-files.txt
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e .
+      - name: Validate every committed Codex report deterministically
+        run: |
+          for report in codex-output/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9].json; do
+            test -f "$report"
+            python -m pygl_radar codex-publish-check --report "$report"
+          done
+      - name: Select newest validated report
+        id: report
+        run: |
+          REPORT_JSON=$(find codex-output -maxdepth 1 -type f -name '????-??-??.json' | LC_ALL=C sort | tail -n 1)
+          test -n "$REPORT_JSON"
+          REPORT_DATE=$(basename "$REPORT_JSON" .json)
+          REPORT_MARKDOWN="codex-output/${REPORT_DATE}.md"
+          test -f "$REPORT_MARKDOWN"
+          echo "report_json=$REPORT_JSON" >> "$GITHUB_OUTPUT"
+          echo "report_markdown=$REPORT_MARKDOWN" >> "$GITHUB_OUTPUT"
+          echo "report_date=$REPORT_DATE" >> "$GITHUB_OUTPUT"
+          echo "fallback_url=https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_SHA}/${REPORT_MARKDOWN}" >> "$GITHUB_OUTPUT"
+      - name: Rebuild Pages and retain the full report history
+        env:
+          PUBLIC_SITE_URL: ${{ vars.PUBLIC_SITE_URL || format('https://{0}.github.io/{1}', github.repository_owner, github.event.repository.name) }}
+          REPORT_JSON: ${{ steps.report.outputs.report_json }}
+          REPORT_DATE: ${{ steps.report.outputs.report_date }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          mkdir -p site/data/reports
+          # Recopy every validated Codex JSON, not only the triggering file:
+          # a backfill must gain its own stable URL without making /latest/
+          # regress to the backfill date.
+          for report in codex-output/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9].json; do
+            cp "$report" "site/data/reports/$(basename "$report")"
+          done
+          python -m pygl_radar.pages --reports site/data/reports --output site --public-site-url "$PUBLIC_SITE_URL" --repository "$GITHUB_REPOSITORY"
+      - name: Persist Pages history without retriggering this workflow
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add site
+          if git diff --cached --quiet; then
+            echo "No Pages content changes to commit"
+          else
+            git commit -m "Publish Codex Pages ${{ steps.report.outputs.report_date }}"
+            git push
+          fi
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    name: Deploy GitHub Pages
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
+
+  notify:
+    # This is the only notification finalizer. A deployment failure switches to
+    # the immutable GitHub Markdown report rather than sending a stale Pages URL.
+    if: always() && needs.prepare.result == 'success'
+    needs: [prepare, deploy]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      PUBLIC_SITE_URL: ${{ vars.PUBLIC_SITE_URL || format('https://{0}.github.io/{1}', github.repository_owner, github.event.repository.name) }}
+      PAGES_RESULT: ${{ needs.deploy.result }}
+      WECHAT_APP_ID: ${{ secrets.WECHAT_APP_ID }}
+      WECHAT_APP_SECRET: ${{ secrets.WECHAT_APP_SECRET }}
+      WECHAT_OPEN_ID: ${{ secrets.WECHAT_OPEN_ID }}
+      WECHAT_TEMPLATE_ID: ${{ secrets.WECHAT_TEMPLATE_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e .
+      - name: Select deployed Pages URL or GitHub report fallback
+        id: target
+        env:
+          FALLBACK_URL: ${{ needs.prepare.outputs.fallback_url }}
+        run: |
+          if [ "$PAGES_RESULT" = "success" ]; then
+            REPORT_URL="${PUBLIC_SITE_URL%/}/latest/"
+          else
+            REPORT_URL="$FALLBACK_URL"
+          fi
+          test -n "$REPORT_URL"
+          echo "report_url=$REPORT_URL" >> "$GITHUB_OUTPUT"
+      - name: Send one compact WeChat entry point
+        run: python -m pygl_radar codex-notify --report "${{ needs.prepare.outputs.report_json }}" --url "${{ steps.target.outputs.report_url }}"

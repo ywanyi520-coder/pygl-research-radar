@@ -5,6 +5,7 @@ __pycache__/
 .env
 config.yaml
 reports/
+work/
 state/seen.json
 state/feedback.json
 state/*.tmp
