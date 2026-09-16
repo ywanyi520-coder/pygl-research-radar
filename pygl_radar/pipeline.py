@@ -6,7 +6,7 @@ import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from .config import load_config, resolve_path
 from .dedup import SeenCache, deduplicate_papers
@@ -18,7 +18,7 @@ from .models import Paper
 from .notifiers import Notifier, WeChatNotifier, WeChatNotifierConfig, MockNotifier, NotificationResult
 from .pages import public_report_url
 from .publishing import GitHubIssuePublisher, NoopPublisher, PublicationResult, ReportPublisher
-from .review import review_paper
+from .review import deep_dive_paper, review_paper
 from .scoring import rank_papers, score_paper
 from .sources import collect_candidates
 from .sources.common import HTTPClient
@@ -56,7 +56,7 @@ def _output_dir(config: dict[str, Any]) -> Path:
 
 
 def _within_window(paper: Paper, now: datetime, hours: int) -> bool:
-    """Conservatively enforce the 48-hour freshness gate when a full date exists."""
+    """Conservatively enforce the freshness gate when a full date exists."""
     if not paper.publication_date:
         return True
     try:
@@ -113,8 +113,6 @@ def _stratified_cap(papers: list[Paper], config: dict[str, Any]) -> list[Paper]:
             break
     selected_topics = topics[:topic_slot_cap]
     selected = selected_journals + selected_topics
-    # Backfill an unused reserved lane only from the opposite lane. Do not
-    # relax the per-venue quota merely because one venue is high-volume.
     remaining = max_candidates - len(selected)
     if remaining and len(selected_journals) < journal_slot_cap:
         extra_topics = topics[topic_slot_cap : topic_slot_cap + remaining]
@@ -170,6 +168,25 @@ def _ingest_remote_feedback(feedback: FeedbackState) -> int:
         return 0
 
 
+def _run_deep_dives(recommended: list[Paper], review_client: Any, profile: dict[str, Any], config: dict[str, Any]) -> int:
+    settings = config.get("deep_review", {})
+    if not bool(settings.get("enabled", True)):
+        return 0
+    max_tokens = max(1000, int(settings.get("max_tokens", 7000)))
+    max_figures = max(1, int(settings.get("max_figures", 12)))
+    count = 0
+    for paper in recommended:
+        deep_dive_paper(
+            paper,
+            review_client,
+            profile,
+            max_tokens=max_tokens,
+            max_figures=max_figures,
+        )
+        count += 1
+    return count
+
+
 def run_radar(
     config_or_path: dict[str, Any] | str | Path | None = None,
     *,
@@ -181,7 +198,7 @@ def run_radar(
     publisher: ReportPublisher | None = None,
     notify: bool = True,
 ) -> RunResult:
-    """Execute retrieval -> triage -> lawful full-text -> review -> digest -> push."""
+    """Execute retrieval -> triage -> lawful full-text -> review -> ranking -> Top-paper deep dive -> publish."""
     config = config_or_path if isinstance(config_or_path, dict) else load_config(config_or_path)
     now = now or datetime.now(timezone.utc)
     http = HTTPClient(timeout=float(config.get("fulltext", {}).get("timeout_seconds", 30)))
@@ -211,7 +228,7 @@ def run_radar(
         min_text_chars=int(config.get("fulltext", {}).get("min_text_chars", 200)),
         min_html_text_chars=int(config.get("fulltext", {}).get("min_html_text_chars", 2000)),
     )
-    review_client = client_from_env("RADAR_REVIEW_MODEL", timeout=120)
+    review_client = client_from_env("RADAR_REVIEW_MODEL", timeout=180)
     reviewed = 0
     for paper in triaged:
         if fulltext_enabled:
@@ -229,12 +246,14 @@ def run_radar(
         top_n=int(scoring_config.get("top_n", 5)),
         min_score=float(scoring_config.get("min_score", 50)),
     )
+    deep_reviewed = _run_deep_dives(recommended, review_client, profile, config)
     stats = {
         "retrieved": len(candidates),
         "deduplicated": len(unique),
         "unseen": len(unseen),
         "triaged": len(triaged),
         "reviewed": reviewed,
+        "deep_reviewed": deep_reviewed,
         "fulltext_reviewed": sum(paper.evidence_level == "FULLTEXT_READ" for paper in triaged),
         "feedback_ingested": feedback_ingested,
         "recommended": len(recommended),
@@ -253,9 +272,9 @@ def run_radar(
     json_path = directory / f"{report_date}.json"
     markdown_path.write_text(render_markdown(recommended, stats, report_date=report_date), encoding="utf-8")
     html_path.write_text(render_html(recommended, stats, report_date=report_date), encoding="utf-8")
+
     def write_json_report() -> None:
-        # Paper.to_dict() intentionally excludes the in-memory full-text cache.
-        json_path.write_text(json.dumps({"version": 1, "date": report_date, "stats": stats, "papers": [paper.to_dict() for paper in recommended]}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        json_path.write_text(json.dumps({"version": 2, "date": report_date, "stats": stats, "papers": [paper.to_dict() for paper in recommended]}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     write_json_report()
     feedback.remember_papers(recommended)
@@ -276,8 +295,6 @@ def run_radar(
     if not publication.ok:
         push_result = NotificationResult(False, "report-publication", error=publication.error or "report publication failed")
     elif not notify:
-        # Production Actions sends after Pages has deployed. Mark the radar
-        # phase successful here so a later WeChat failure cannot replay papers.
         push_result = NotificationResult(True, "deferred")
     else:
         message = render_wechat_message(recommended, stats, report_url=notification_url)
