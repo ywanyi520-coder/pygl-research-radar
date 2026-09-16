@@ -1,0 +1,57 @@
+name: PYGL Research Radar daily scan
+
+on:
+  schedule:
+    # 08:30 Asia/Shanghai = 00:30 UTC.
+    - cron: "30 0 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  radar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e ".[test]"
+      - name: Restore pushed-paper cache
+        uses: actions/cache/restore@v4
+        with:
+          path: state/seen.json
+          key: pygl-radar-seen-${{ github.run_id }}
+          restore-keys: pygl-radar-seen-
+      - run: pytest
+      - name: Run radar and push WeChat digest
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+          RADAR_TRIAGE_MODEL: ${{ secrets.RADAR_TRIAGE_MODEL }}
+          RADAR_REVIEW_MODEL: ${{ secrets.RADAR_REVIEW_MODEL }}
+          UNPAYWALL_EMAIL: ${{ secrets.UNPAYWALL_EMAIL }}
+          WECHAT_APP_ID: ${{ secrets.WECHAT_APP_ID }}
+          WECHAT_APP_SECRET: ${{ secrets.WECHAT_APP_SECRET }}
+          WECHAT_OPEN_ID: ${{ secrets.WECHAT_OPEN_ID }}
+          WECHAT_TEMPLATE_ID: ${{ secrets.WECHAT_TEMPLATE_ID }}
+        run: |
+          if [ -f config.yaml ]; then CFG=config.yaml; else CFG=config.example.yaml; fi
+          python -m pygl_radar --config "$CFG"
+      - name: Save pushed-paper cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: state/seen.json
+          key: pygl-radar-seen-${{ github.run_id }}
+      - name: Upload digest artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pygl-radar-${{ github.run_id }}
+          path: reports/
+          if-no-files-found: warn

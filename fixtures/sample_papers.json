@@ -1,0 +1,22 @@
+{
+  "papers": [
+    {
+      "title": "Conditioned medium fractionation identifies a soluble ligand that restores post-engulfment lysosome maturation",
+      "abstract": "Conditioned medium from resolving macrophages was separated by size fractionation. A candidate ligand was identified and validated by blockade and add-back. The inhibitor phenotype was rescued by downstream activation, linking soluble signals to lysosome maturation and functional efferocytosis.",
+      "journal": "Nature Communications",
+      "publication_date": "2026-09-16",
+      "doi": "10.1000/transferable-pattern",
+      "publisher_url": "https://example.org/transferable-pattern",
+      "sources": ["fixture"]
+    },
+    {
+      "title": "PYGL expression correlates with macrophage inflammatory state",
+      "abstract": "We report a transcriptomic association between PYGL expression and a macrophage state in inflamed tissue. The study does not test glycogenolysis, phosphorylation, rescue, or post-engulfment function.",
+      "journal": "Cell Reports",
+      "publication_date": "2026-09-16",
+      "doi": "10.1000/keyword-heavy",
+      "publisher_url": "https://example.org/keyword-heavy",
+      "sources": ["fixture"]
+    }
+  ]
+}
