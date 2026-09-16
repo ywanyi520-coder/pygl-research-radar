@@ -226,7 +226,8 @@ def test_daily_issue_publication_is_idempotent():
     assert [call[0] for call in publisher.calls] == ["GET", "PATCH"]
 
 
-def test_pipeline_publishes_before_wechat_and_passes_public_url(tmp_path: Path):
+def test_pipeline_publishes_before_wechat_and_passes_pages_url(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("PUBLIC_SITE_URL", "https://owner.github.io/pygl-research-radar")
     config = {
         "profile": {"keywords": ["PYGL", "macrophage"], "mechanisms": ["PYGL", "lysosome"], "experimental_patterns": ["rescue"]},
         "triage": {"batch_size": 20, "retain": 15}, "fulltext": {"enabled": False},
@@ -236,7 +237,8 @@ def test_pipeline_publishes_before_wechat_and_passes_public_url(tmp_path: Path):
     notifier = CaptureNotifier()
     result = run_radar(config, fixture_path=Path(__file__).parent.parent / "fixtures/sample_papers.json", dry_run=True, notifier=notifier, publisher=FakePublisher())
     assert result.report_url.endswith("/2026-09-16")
-    assert notifier.url == result.report_url
+    assert result.public_report_url == "https://owner.github.io/pygl-research-radar/latest/"
+    assert notifier.url == result.public_report_url
     saved = result.markdown_path.read_text(encoding="utf-8")
     assert "反馈格式" in saved
 
