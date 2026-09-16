@@ -60,7 +60,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "top_n": 5,
     },
     "output": {"directory": "reports"},
-    "publishing": {"enabled": True},
+    "publishing": {"enabled": True, "public_site_url": ""},
     "state": {"seen_cache": "state/seen.json", "feedback": "state/feedback.json"},
 }
 
