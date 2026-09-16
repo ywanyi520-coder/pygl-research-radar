@@ -42,3 +42,18 @@ def test_deepseek_workflow_is_manual_fallback_and_pr_ci_remains_available():
     assert "workflow_dispatch:" in text
     assert "schedule:" not in text
     assert "pull_request:" in text
+
+
+def test_scheduled_run_contract_requires_main_cleanliness_and_exact_commit_scope():
+    text = (ROOT / "docs" / "CODEX_AUTOMATION_PROMPT.md").read_text(encoding="utf-8")
+
+    for required in (
+        "git switch main",
+        "git pull --ff-only origin main",
+        'git branch --show-current)" = "main"',
+        "git status --porcelain --untracked-files=no",
+        "Do not stash, reset, force checkout",
+        "Only after `codex-validate` has exited successfully",
+        "git diff --cached --name-only",
+    ):
+        assert required in text

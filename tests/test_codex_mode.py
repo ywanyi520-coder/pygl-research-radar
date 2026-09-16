@@ -9,6 +9,7 @@ import pytest
 
 from pygl_radar.codex_mode import (
     CodexModeError,
+    build_codex_instructions,
     hydrate_codex_workspace,
     prepare_codex_workspace,
     validate_publishable_codex_report,
@@ -130,6 +131,20 @@ def test_candidate_manifest_is_deterministic_and_contains_provenance(tmp_path: P
 
 def test_workspace_is_gitignored():
     assert "work/" in Path(__file__).parents[1].joinpath(".gitignore").read_text(encoding="utf-8").splitlines()
+
+
+def test_codex_instructions_fail_closed_on_branch_cleanliness_and_commit_scope():
+    instructions = build_codex_instructions("2026-09-16", {"mechanisms": ["PYGL"]})
+    for required in (
+        "git switch main",
+        "git pull --ff-only origin main",
+        "git branch --show-current",
+        "git status --porcelain --untracked-files=no",
+        "Never stash, reset, force checkout",
+        "Only then stage exactly those two paths",
+        "git diff --cached --name-only",
+    ):
+        assert required in instructions
 
 
 def test_shortlist_unknown_id_is_rejected(tmp_path: Path):

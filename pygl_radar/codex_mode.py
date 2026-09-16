@@ -265,13 +265,14 @@ Profile digest: `{_profile_digest(profile)}`
 
 ## Required sequence
 
-1. Triage every paper in `candidates.json`; do not require the string PYGL to occur in a paper.
-2. Weight experimental logic more strongly than simple keyword overlap. Reusable patterns include:
+1. Before doing any research work, run `git switch main`, then `git pull --ff-only origin main`. Verify `git branch --show-current` is exactly `main` and `git status --porcelain --untracked-files=no` is empty. If any check fails, stop and report it. Never stash, reset, force checkout, discard changes, or auto-fix the repository.
+2. Triage every paper in `candidates.json`; do not require the string PYGL to occur in a paper.
+3. Weight experimental logic more strongly than simple keyword overlap. Reusable patterns include:
    - {patterns}
-3. Keep an auditable shortlist of approximately 10–15 papers in `shortlist.json`. Every entry must use a `paper_id` already present in `candidates.json` and include a short triage rationale. Do not invent papers.
-4. Run `python -m pygl_radar codex-hydrate --workspace work/{report_date} --shortlist work/{report_date}/shortlist.json`. Read only the evidence files created there. `FULLTEXT_READ` means lawful OA text was actually fetched and parsed; otherwise use `ABSTRACT_ONLY`.
-5. Write `work/{report_date}/codex_reviewed.json` with only the final Top 3–5 papers, using the six 0–100 fields `direct_relevance`, `mechanism_relevance`, `experimental_similarity`, `transferability`, `idea_value`, and `evidence_quality`, plus the detailed journal-club fields listed below.
-6. Run `python -m pygl_radar codex-validate --workspace work/{report_date}`. Only a successful validation creates sanitized `codex-output/{report_date}.json` and `.md`.
+4. Keep an auditable shortlist of approximately 10–15 papers in `shortlist.json`. Every entry must use a `paper_id` already present in `candidates.json` and include a short triage rationale. Do not invent papers.
+5. Run `python -m pygl_radar codex-hydrate --workspace work/{report_date} --shortlist work/{report_date}/shortlist.json`. Read only the evidence files created there. `FULLTEXT_READ` means lawful OA text was actually fetched and parsed; otherwise use `ABSTRACT_ONLY`.
+6. Write `work/{report_date}/codex_reviewed.json` with only the final Top 3–5 papers, using the six 0–100 fields `direct_relevance`, `mechanism_relevance`, `experimental_similarity`, `transferability`, `idea_value`, and `evidence_quality`, plus the detailed journal-club fields listed below.
+7. Run `python -m pygl_radar codex-validate --workspace work/{report_date}`. Only a successful validation creates sanitized `codex-output/{report_date}.json` and `.md`. Only then stage exactly those two paths, verify `git diff --cached --name-only` contains no other path, commit, and push.
 
 ## Detailed review contract
 

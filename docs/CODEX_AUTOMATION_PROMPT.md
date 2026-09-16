@@ -25,7 +25,10 @@ pygl-research-radar repository.
 Follow docs/CODEX_AUTOMATION_PROMPT.md exactly.
 
 Run:
-git pull
+git switch main
+→ git pull --ff-only origin main
+→ verify git branch --show-current == main
+→ verify no unexpected tracked modifications
 → codex-prepare
 → scientific triage
 → codex-hydrate
@@ -40,7 +43,19 @@ If validation or retrieval fails, stop and report the failure.
 
 ## Required run contract
 
-1. Start with `git pull --ff-only`. Do not start if the checkout is dirty.
+1. Before every scheduled run, execute these commands in order:
+
+   ```bash
+   git switch main
+   git pull --ff-only origin main
+   test "$(git branch --show-current)" = "main"
+   test -z "$(git status --porcelain --untracked-files=no)"
+   ```
+
+   The final check is deliberately limited to tracked modifications. If a
+   branch, pull, or clean-worktree check fails, **stop and report the problem**.
+   Do not stash, reset, force checkout, discard changes, or auto-fix the
+   repository.
 2. Run `python -m pygl_radar codex-prepare --config config.yaml`; if the local
    config is absent, use `config.example.yaml`.
 3. Read the full `work/YYYY-MM-DD/candidates.json` pool before triage. Use the
@@ -57,11 +72,21 @@ If validation or retrieval fails, stop and report the failure.
 6. Run `python -m pygl_radar codex-validate --workspace work/YYYY-MM-DD`.
    Only a successful validation may create `codex-output/YYYY-MM-DD.json` and
    `codex-output/YYYY-MM-DD.md`.
-7. Inspect `git status --short`. Stage and commit only the matching sanitized
-   pair, for example `git add codex-output/YYYY-MM-DD.json
-   codex-output/YYYY-MM-DD.md && git commit -m "Publish Codex report
-   YYYY-MM-DD"`, then `git push`. GitHub Actions validates the committed JSON
-   again before it builds Pages or notifies WeChat.
+7. Only after `codex-validate` has exited successfully, stage the matching
+   sanitized pair. Before committing, prove that the staged commit contains no
+   other paths:
+
+   ```bash
+   git add codex-output/YYYY-MM-DD.json codex-output/YYYY-MM-DD.md
+   test "$(git diff --cached --name-only | LC_ALL=C sort)" = "$(printf '%s\\n%s' codex-output/YYYY-MM-DD.json codex-output/YYYY-MM-DD.md | LC_ALL=C sort)"
+   git commit -m "Publish Codex report YYYY-MM-DD"
+   git push
+   ```
+
+   If either output is missing, validation failed, or the staged-path check
+   fails, stop and report it. Do not amend the scope by staging another path.
+   GitHub Actions validates the committed JSON again before it builds Pages or
+   notifies WeChat.
 
 ## Evidence and safety boundaries
 
