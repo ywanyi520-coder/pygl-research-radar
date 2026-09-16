@@ -1,6 +1,6 @@
 # PYGL Research Radar v1
 
-PYGL Research Radar 是一个证据感知的每日生物医学文献筛选器。它从 PubMed 与 Crossref 检索过去 48 小时的候选论文，批量 LLM 初筛，再对保留论文尝试合法开放获取全文，按“实验结构可迁移性”优先于关键词重合的规则排序，生成中文 Markdown/HTML 简报，并通过微信公众号测试账号模板消息推送。
+PYGL Research Radar 是一个证据感知的每日生物医学文献筛选器。它从 PubMed 与 Crossref 的 topic lane 和高层期刊 journal-first lane 联合检索过去 48 小时的候选论文，批量 LLM 初筛，再对保留论文尝试合法开放获取全文，按“实验结构可迁移性”优先于关键词重合的规则排序，生成中文 Markdown/HTML 简报，发布为可手机打开的 GitHub Issue，并通过微信公众号测试账号模板消息推送。
 
 它服务于巨噬细胞 efferocytosis / phagosome-lysosome processing 研究，特别关注可迁移的实验模式：conditioned medium → fractionation → ligand → blockade/add-back、抑制剂 → 激活/激动剂 → rescue、上游阻断 → 下游旁路/epistasis、急性磷酸化 → 代谢 → 功能表型、吞噬结合完整但吞噬后处理受损，以及 injury-first → delayed intervention → resolution。
 
@@ -9,7 +9,7 @@ PYGL Research Radar 是一个证据感知的每日生物医学文献筛选器。
 每篇论文恰好标记为 `FULLTEXT_READ` 或 `ABSTRACT_ONLY`。
 
 - `ABSTRACT_ONLY` 只能生成摘要层面的总结；流水线会清除图号、剂量、样本量等全文级断言，并把未能获取全文记录为正常的部分完成。
-- `FULLTEXT_READ` 只有在 PMC/Europe PMC、Unpaywall 或明确提供的 OA 链接返回可解析文本并记录来源 URL 后才会设置。不会绕过 paywall、反爬或 CAPTCHA。
+- `FULLTEXT_READ` 只有在 PMC/Europe PMC XML、解析出 substantial text 的 OA PDF，或带 article-body/section 结构的 OA HTML 返回后才会设置。Unpaywall landing page、paywall、反爬或 CAPTCHA 不会被当成全文。
 - 全文来源、DOI/PMID、发布时间、检索来源、retrieval mode、模型和机器可读六维评分都会保存在 JSON 报告中。
 
 ## Setup
@@ -40,7 +40,7 @@ python -m pygl_radar --config config.example.yaml --fixture fixtures/sample_pape
 python -m pygl_radar --config config.yaml
 ```
 
-反馈标签只做有界的软偏好修正，不会永久排除陌生机制：
+反馈标签只做有界的软偏好修正，不会永久排除陌生机制。报告 Issue 评论格式为 `feedback <DOI或PMID> <relevant|idea|method|skip>`；下一次 Actions 运行会学习期刊、机制与实验模式偏好：
 
 ```bash
 python -m pygl_radar --config config.yaml feedback --paper-id 10.1234/example --label relevant
@@ -68,7 +68,7 @@ pytest
 | `RADAR_REVIEW_MODEL` | 可选，深度复核模型名 |
 | `UNPAYWALL_EMAIL` | 可选，启用 Unpaywall 合规 OA 查询所需的联系邮箱 |
 
-不要把 AppID、AppSecret、OpenID、模板 ID、模型 key 或邮箱写入代码、YAML、fixture、日志或 PR。Workflow 使用 Actions cache 保存成功推送的 DOI/PMID，报告同时上传为 artifact。
+不要把 AppID、AppSecret、OpenID、模板 ID、模型 key 或邮箱写入代码、YAML、fixture、日志或 PR。Workflow 使用 Actions cache 保存成功推送的 DOI/PMID 与反馈状态，报告同时发布为 GitHub Issue 并上传为 artifact；PR 会运行无 secrets 的 pytest CI，生产 WeChat push 仅在 schedule/manual 事件执行。
 
 微信 notifier 是独立抽象。`MockNotifier` 用于 dry-run 和测试；`WeChatNotifier` 使用官方测试账号/模板消息接口，token 与发送错误不会把 secret 或 token 写入日志。
 
@@ -94,6 +94,7 @@ pygl_radar/
 ├── scoring.py     # machine-readable weighted six-axis scoring
 ├── digest.py      # Chinese Markdown/HTML/WeChat rendering
 ├── notifiers/     # MockNotifier and WeChat template-message notifier
-├── feedback.py    # versioned JSON state and bounded soft preference modifier
+├── feedback.py    # issue-comment ingestion and bounded tag-level soft preference modifier
+├── publishing.py  # mobile-readable GitHub Issue report publisher
 └── pipeline.py    # end-to-end orchestrator
 ```

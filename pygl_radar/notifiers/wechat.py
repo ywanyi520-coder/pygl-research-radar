@@ -46,7 +46,7 @@ class WeChatNotifier:
             value = json.loads(response.read().decode("utf-8"))
         return value if isinstance(value, dict) else {}
 
-    def send(self, message: str) -> NotificationResult:
+    def send(self, message: str, *, url: str = "") -> NotificationResult:
         try:
             token_response = self._request_json(
                 f"{self.config.base_url.rstrip('/')}/cgi-bin/token",
@@ -60,6 +60,8 @@ class WeChatNotifier:
                 "template_id": self.config.template_id,
                 "data": {"first": {"value": message[:1800], "color": "#17365D"}},
             }
+            if url:
+                payload["url"] = url
             response = self._request_json(
                 f"{self.config.base_url.rstrip('/')}/cgi-bin/message/template/send",
                 params={"access_token": token}, payload=payload,

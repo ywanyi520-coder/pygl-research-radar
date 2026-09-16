@@ -39,8 +39,14 @@ def deterministic_triage(paper: Paper, profile: dict[str, Any]) -> dict[str, Any
     direct, mechanisms, patterns = _signals(paper, profile)
     text = f"{paper.title} {paper.abstract}".casefold()
     matched_mechanisms = [term for term in profile.get("mechanisms", []) if str(term).casefold() in text][:6]
+    matched_patterns = [term for term in profile.get("experimental_patterns", []) if str(term).casefold() in text][:8]
+    journal_lane = any(str(source).endswith("-journal") for source in paper.sources)
     return {
-        "retain": bool(direct or mechanisms or patterns),
+        # Journal-first papers without topic terms must still reach the LLM;
+        # an offline fallback cannot score them positively, so they remain
+        # eligible for later review but will not pass a score threshold by
+        # keyword accident.
+        "retain": bool(direct or mechanisms or patterns or journal_lane),
         "direct_relevance": min(100.0, 28.0 * direct),
         "mechanism_relevance": min(100.0, 22.0 * mechanisms),
         # Pattern hits intentionally have more leverage than raw keyword hits.
@@ -50,6 +56,7 @@ def deterministic_triage(paper: Paper, profile: dict[str, Any]) -> dict[str, Any
         "evidence_quality": 35.0 if paper.abstract else 15.0,
         "rationale": "基于题名/摘要的确定性召回；待深审确认。",
         "matched_mechanisms": matched_mechanisms,
+        "matched_patterns": matched_patterns,
         "model": "deterministic-fallback",
     }
 

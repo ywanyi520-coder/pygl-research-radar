@@ -24,12 +24,17 @@ DEFAULT_CONFIG: dict[str, Any] = {
         ],
         "keywords": ["macrophage", "efferocytosis", "phagosome", "lysosome", "glycogen"],
     },
-    "sources": {
+        "sources": {
         "window_hours": 48,
         "max_candidates": 80,
         "pubmed": {"enabled": True, "max_results": 80},
         "crossref": {"enabled": True, "max_results": 80},
-        "optional": {"biorxiv": False, "medrxiv": False, "europe_pmc": True},
+            "optional": {"biorxiv": False, "medrxiv": False, "europe_pmc": True},
+            "journal_lane": {
+                "enabled": True,
+                "max_results": 40,
+                "exclude_publication_types": ["Editorial", "News", "Comment", "Letter", "Review"],
+            },
         "prioritize_journals": [
             "Nature", "Cell", "Science", "Nature Immunology", "Nature Metabolism",
             "Nature Cell Biology", "Nature Medicine", "Nature Communications",
@@ -52,6 +57,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "top_n": 5,
     },
     "output": {"directory": "reports"},
+    "publishing": {"enabled": True},
     "state": {"seen_cache": "state/seen.json", "feedback": "state/feedback.json"},
 }
 

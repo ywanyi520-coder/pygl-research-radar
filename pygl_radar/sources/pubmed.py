@@ -34,21 +34,41 @@ def _text(element: ET.Element | None) -> str:
     return "".join(element.itertext()).strip() if element is not None else ""
 
 
+def _date_filter(start: datetime, end: datetime) -> str:
+    return f"({start:%Y/%m/%d}[Date - Publication] : {end:%Y/%m/%d}[Date - Publication])"
+
+
 def _query(config: dict[str, Any], start: datetime, end: datetime) -> str:
     profile = config.get("profile", {})
     terms = list(dict.fromkeys(profile.get("keywords", []) + profile.get("mechanisms", [])[:12]))
     joined = " OR ".join(f'"{term}"' for term in terms if term)
-    return f"({joined}) AND ({start:%Y/%m/%d}[Date - Publication] : {end:%Y/%m/%d}[Date - Publication])"
+    return f"({joined}) AND {_date_filter(start, end)}"
 
 
-def search_pubmed(config: dict[str, Any], *, now: datetime | None = None, http: HTTPClient | None = None) -> list[Paper]:
+def _journal_query(config: dict[str, Any], start: datetime, end: datetime) -> str:
+    settings = config.get("sources", {}).get("journal_lane", {})
+    journals = [str(value).strip() for value in config.get("sources", {}).get("prioritize_journals", []) if str(value).strip()]
+    journal_terms = " OR ".join(f'"{journal}"[jour]' for journal in journals)
+    excluded = [str(value).strip() for value in settings.get("exclude_publication_types", []) if str(value).strip()]
+    exclusion = "".join(f' NOT "{value}"[pt]' for value in excluded)
+    if not journal_terms:
+        return _date_filter(start, end)
+    return f"({journal_terms}) AND {_date_filter(start, end)} AND \"Journal Article\"[pt]{exclusion}"
+
+
+def search_pubmed(
+    config: dict[str, Any], *, now: datetime | None = None, http: HTTPClient | None = None,
+    lane: str = "topic",
+) -> list[Paper]:
     now = now or datetime.now(timezone.utc)
     http = http or HTTPClient()
     settings = config.get("sources", {}).get("pubmed", {})
     start = now - timedelta(hours=int(config.get("sources", {}).get("window_hours", 48)))
+    query = _journal_query(config, start, now) if lane == "journal" else _query(config, start, now)
     params = {
-        "db": "pubmed", "term": _query(config, start, now),
-        "retmax": int(settings.get("max_results", 80)), "retmode": "json", "sort": "date",
+        "db": "pubmed", "term": query,
+        "retmax": int(config.get("sources", {}).get("journal_lane", {}).get("max_results", settings.get("max_results", 80))) if lane == "journal" else int(settings.get("max_results", 80)),
+        "retmode": "json", "sort": "date",
     }
     if settings.get("email"):
         params["email"] = settings["email"]
@@ -93,6 +113,11 @@ def search_pubmed(config: dict[str, Any], *, now: datetime | None = None, http: 
                 title=title, abstract=abstract, journal=journal, publication_date=publication_date,
                 doi=doi, pmid=pmid, pmcid=pmcid, publisher_url=f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/" if pmid else None,
                 source_urls=[f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/"] if pmid else [],
-                sources=["pubmed"], authors=authors,
+                sources=[f"pubmed-{lane}"], authors=authors,
             ))
     return papers
+
+
+def search_pubmed_journal_lane(config: dict[str, Any], *, now: datetime | None = None, http: HTTPClient | None = None) -> list[Paper]:
+    """Sweep configured high-tier journals independently of topic keywords."""
+    return search_pubmed(config, now=now, http=http, lane="journal")

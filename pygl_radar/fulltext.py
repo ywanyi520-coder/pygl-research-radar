@@ -16,6 +16,7 @@ BLOCKED_MARKERS = (
     "just a moment", "challenge-platform", "cf-mitigated", "captcha",
     "verify you are human", "access denied", "paywall", "subscription required",
 )
+ARTICLE_BODY_MARKERS = ("<article", "article-body", "article_body", "fulltext", "full-text")
 
 
 @dataclass
@@ -38,9 +39,10 @@ def _blocked(body: str | bytes) -> bool:
 
 def _xml_or_html_text(body: str | bytes) -> str:
     value = html.unescape(_body_text(body or ""))
+    value = re.sub(r"</?(?:title|h[1-6]|sec|section)[^>]*>", "\n", value, flags=re.I)
     value = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", value, flags=re.I | re.S)
     value = re.sub(r"<[^>]+>", " ", value)
-    return re.sub(r"\s+", " ", value).strip()
+    return "\n".join(line.strip() for line in value.splitlines() if line.strip())
 
 
 def _pdf_text(body: str | bytes) -> str:
@@ -69,12 +71,33 @@ def _content_text(response: HTTPResponse) -> str:
     return _xml_or_html_text(response.body)
 
 
+def _is_pdf(response: HTTPResponse) -> bool:
+    content_type = " ".join(f"{key}:{value}" for key, value in response.headers.items()).casefold()
+    body = response.body
+    return (isinstance(body, bytes) and body.startswith(b"%PDF")) or (isinstance(body, str) and body.startswith("%PDF")) or "application/pdf" in content_type
+
+
+def _is_xml_fulltext(body: str | bytes) -> bool:
+    value = _body_text(body or "")
+    lowered = value.casefold()
+    return "<body" in lowered and ("<article" in lowered or "<article-meta" in lowered or "<sec" in lowered)
+
+
+def _is_article_html(body: str | bytes) -> bool:
+    value = _body_text(body or "")
+    lowered = value.casefold()
+    marker_count = sum(marker in lowered for marker in ARTICLE_BODY_MARKERS)
+    headings = len(re.findall(r"<h[1-6]\b|<section\b|<div[^>]+class=[\"'][^\"']*(?:section|article)[^\"']*[\"']", lowered))
+    return marker_count >= 1 and headings >= 2
+
+
 class FulltextAcquirer:
     """Lawful OA-only acquisition chain; never bypasses a paywall or anti-bot gate."""
 
-    def __init__(self, http: HTTPClient | None = None, *, timeout: float = 30.0, min_text_chars: int = 200):
+    def __init__(self, http: HTTPClient | None = None, *, timeout: float = 30.0, min_text_chars: int = 200, min_pdf_text_chars: int | None = None):
         self.http = http or HTTPClient(timeout=timeout)
         self.min_text_chars = min_text_chars
+        self.min_pdf_text_chars = min_pdf_text_chars if min_pdf_text_chars is not None else max(800, min_text_chars)
 
     def _url(self, url: str, *, mode: str) -> FulltextResult | None:
         get_binary = getattr(self.http, "get_binary", None)
@@ -85,7 +108,15 @@ class FulltextAcquirer:
             logger.info("Skipping blocked/paywalled full-text response from %s", url)
             return None
         text = _content_text(response)
-        if len(text) < self.min_text_chars:
+        if _is_pdf(response):
+            valid = len(text) >= self.min_pdf_text_chars
+        elif mode.endswith("-xml") or mode == "pmc-xml":
+            valid = _is_xml_fulltext(response.body) and len(text) >= self.min_text_chars
+        else:
+            # Unpaywall landing pages are not evidence.  HTML must expose an
+            # article-body/section structure before it can be considered OA text.
+            valid = _is_article_html(response.body) and len(text) >= self.min_text_chars
+        if not valid:
             return None
         return FulltextResult("FULLTEXT_READ", text, url, mode, "retrieved and parsed")
 

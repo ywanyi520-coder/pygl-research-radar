@@ -29,18 +29,26 @@ def _date(item: dict[str, Any]) -> str | None:
     return None
 
 
-def search_crossref(config: dict[str, Any], *, now: datetime | None = None, http: HTTPClient | None = None) -> list[Paper]:
+def _search(config: dict[str, Any], *, now: datetime, http: HTTPClient, lane: str, journal: str | None = None, rows_override: int | None = None) -> list[Paper]:
     now = now or datetime.now(timezone.utc)
     http = http or HTTPClient()
     settings = config.get("sources", {}).get("crossref", {})
     start = now - timedelta(hours=int(config.get("sources", {}).get("window_hours", 48)))
     profile = config.get("profile", {})
     terms = list(dict.fromkeys(profile.get("keywords", []) + profile.get("mechanisms", [])[:8]))
-    result = http.get_json(WORKS_URL, params={
-        "query.bibliographic": " ".join(terms),
-        "filter": f"from-pub-date:{start:%Y-%m-%d},until-pub-date:{now:%Y-%m-%d}",
-        "rows": int(settings.get("max_results", 80)), "select": "DOI,title,abstract,container-title,published,published-online,published-print,URL,author,link",
+    journal_settings = config.get("sources", {}).get("journal_lane", {})
+    query_params = {
+        "filter": f"from-pub-date:{start:%Y-%m-%d},until-pub-date:{now:%Y-%m-%d},type:journal-article",
+        "rows": rows_override if rows_override is not None else (int(journal_settings.get("max_results", settings.get("max_results", 80))) if lane == "journal" else int(settings.get("max_results", 80))),
+        "select": "DOI,title,abstract,container-title,published,published-online,published-print,URL,author,link,type",
         "mailto": settings.get("email", ""),
+    }
+    if lane == "journal":
+        query_params["query.container-title"] = journal or ""
+    else:
+        query_params["query.bibliographic"] = " ".join(terms)
+    result = http.get_json(WORKS_URL, params={
+        **query_params,
     })
     items = ((result.get("message") or {}).get("items") or [])
     papers: list[Paper] = []
@@ -61,6 +69,24 @@ def search_crossref(config: dict[str, Any], *, now: datetime | None = None, http
             title=title, abstract=_strip_markup(str(item.get("abstract", ""))),
             journal=str((item.get("container-title") or [""])[0]), publication_date=_date(item),
             doi=doi, publisher_url=publisher_url, source_urls=list(dict.fromkeys([u for u in [publisher_url, *links] if u])),
-            sources=["crossref"], authors=authors,
+            sources=[f"crossref-{lane}"], authors=authors,
         ))
+    return papers
+
+
+def search_crossref(config: dict[str, Any], *, now: datetime | None = None, http: HTTPClient | None = None, lane: str = "topic") -> list[Paper]:
+    now = now or datetime.now(timezone.utc)
+    return _search(config, now=now, http=http or HTTPClient(), lane=lane)
+
+
+def search_crossref_journal_lane(config: dict[str, Any], *, now: datetime | None = None, http: HTTPClient | None = None) -> list[Paper]:
+    """Sweep each configured journal by container title, with no topic query."""
+    now = now or datetime.now(timezone.utc)
+    client = http or HTTPClient()
+    journals = [str(value).strip() for value in config.get("sources", {}).get("prioritize_journals", []) if str(value).strip()]
+    total_limit = int(config.get("sources", {}).get("journal_lane", {}).get("max_results", 40))
+    per_journal = max(1, (total_limit + len(journals) - 1) // len(journals)) if journals else 0
+    papers: list[Paper] = []
+    for journal in journals:
+        papers.extend(_search(config, now=now, http=client, lane="journal", journal=journal, rows_override=per_journal))
     return papers

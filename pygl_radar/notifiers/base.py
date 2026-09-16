@@ -13,14 +13,16 @@ class NotificationResult:
 
 
 class Notifier(Protocol):
-    def send(self, message: str) -> NotificationResult: ...
+    def send(self, message: str, *, url: str = "") -> NotificationResult: ...
 
 
 @dataclass
 class MockNotifier:
     sent_messages: list[str] = field(default_factory=list)
+    sent_urls: list[str] = field(default_factory=list)
     provider: str = "mock"
 
-    def send(self, message: str) -> NotificationResult:
+    def send(self, message: str, *, url: str = "") -> NotificationResult:
         self.sent_messages.append(message)
+        self.sent_urls.append(url)
         return NotificationResult(ok=True, provider=self.provider, message_id="dry-run")

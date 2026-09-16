@@ -52,6 +52,11 @@ sources:
   crossref:
     enabled: true
     max_results: 80
+  journal_lane:
+    enabled: true
+    max_results: 40
+    # Keep the high-tier sweep focused on research articles.
+    exclude_publication_types: [Editorial, News, Comment, Letter, Review]
   prioritize_journals: [Nature, Cell, Science, "Nature Immunology", "Nature Metabolism", "Nature Communications", Immunity, "Cell Metabolism", PNAS]
 
 triage:
@@ -76,6 +81,10 @@ scoring:
 
 output:
   directory: reports
+
+publishing:
+  # Production runs publish a mobile-readable GitHub Issue before WeChat push.
+  enabled: true
 
 state:
   seen_cache: state/seen.json

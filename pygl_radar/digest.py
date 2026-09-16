@@ -28,12 +28,31 @@ def _links(paper: Paper) -> str:
     return " · ".join(dict.fromkeys(links)) or "无外部链接"
 
 
+def _safe_href(value: str) -> str | None:
+    return value if value.startswith(("https://", "http://")) else None
+
+
+def _html_links(paper: Paper) -> str:
+    values = []
+    if paper.doi:
+        values.append(("DOI", f"https://doi.org/{paper.doi}"))
+    if paper.pmid:
+        values.append(("PubMed", f"https://pubmed.ncbi.nlm.nih.gov/{paper.pmid}/"))
+    if paper.publisher_url:
+        values.append(("Publisher", paper.publisher_url))
+    if paper.fulltext_source_url:
+        values.append(("全文来源", paper.fulltext_source_url))
+    links = [f"<a href='{html.escape(url, quote=True)}'>{html.escape(label)}</a>" for label, url in values if _safe_href(url)]
+    return " · ".join(dict.fromkeys(links)) or "无外部链接"
+
+
 def render_markdown(papers: Iterable[Paper], stats: dict[str, Any], *, report_date: str | None = None) -> str:
     date_text = report_date or datetime.now().date().isoformat()
     selected = list(papers)
     lines = [
         f"# PYGL Research Radar v1 — {date_text}", "",
         f"> 扫描 {stats.get('retrieved', 0)} 篇，去重后 {stats.get('deduplicated', 0)} 篇，深审 {stats.get('reviewed', 0)} 篇；仅展示达到质量门槛的 {len(selected)} 篇。", "",
+        "> 反馈格式：在本报告 Issue 评论 `feedback <DOI或PMID> <relevant|idea|method|skip>`，下一次运行会学习机制/实验模式偏好。", "",
     ]
     if stats.get("source_failures"):
         lines += ["> ⚠️ 部分来源失败：" + "; ".join(f"{key}: {value}" for key, value in stats["source_failures"].items()), ""]
@@ -58,9 +77,26 @@ def render_markdown(papers: Iterable[Paper], stats: dict[str, Any], *, report_da
 
 
 def render_html(papers: Iterable[Paper], stats: dict[str, Any], *, report_date: str | None = None) -> str:
-    markdown = render_markdown(papers, stats, report_date=report_date)
-    body = "<br>\n".join(html.escape(line) for line in markdown.splitlines())
-    return f"<!doctype html><html lang='zh-CN'><meta charset='utf-8'><title>PYGL Research Radar</title><body><pre style='white-space:pre-wrap;font-family:system-ui'>{body}</pre></body></html>\n"
+    date_text = report_date or datetime.now().date().isoformat()
+    selected = list(papers)
+    blocks = [f"<h1>PYGL Research Radar v1 — {html.escape(date_text)}</h1>", f"<p>扫描 {stats.get('retrieved', 0)} 篇，去重后 {stats.get('deduplicated', 0)} 篇，深审 {stats.get('reviewed', 0)} 篇；推荐 {len(selected)} 篇。</p>"]
+    if not selected:
+        blocks.append("<p>今日没有达到质量门槛的推荐；不为凑数输出论文。</p>")
+    for index, paper in enumerate(selected, 1):
+        blocks.append(
+            "<article>"
+            f"<h2>{index}. {html.escape(paper.title)}</h2>"
+            f"<p>{html.escape(paper.journal or '期刊未提供')} · {html.escape(paper.publication_date or '日期未提供')} · evidence: <strong>{html.escape(paper.evidence_level)}</strong></p>"
+            f"<p><strong>Final score:</strong> {paper.final_score:.2f}</p>"
+            f"<p><strong>Core finding:</strong> {html.escape(_text(paper, 'core_finding'))}</p>"
+            f"<p><strong>Why recommended:</strong> {html.escape(_text(paper, 'why_recommended'))}</p>"
+            f"<p><strong>Mechanism mapping:</strong> {html.escape(_text(paper, 'mechanism_mapping'))}</p>"
+            f"<p><strong>Transferable strategy:</strong> {html.escape(_text(paper, 'transferable_strategy'))}</p>"
+            f"<p><strong>Wet-lab idea:</strong> {html.escape(_text(paper, 'new_hypothesis'))}</p>"
+            f"<p>Links: {_html_links(paper)}</p>"
+            "</article>"
+        )
+    return "<!doctype html><html lang='zh-CN'><meta charset='utf-8'><title>PYGL Research Radar</title><body style='font-family:system-ui;line-height:1.5'>" + "\n".join(blocks) + "</body></html>\n"
 
 
 def render_wechat_message(papers: Iterable[Paper], stats: dict[str, Any], *, report_url: str = "") -> str:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import re
 from typing import Any
 
@@ -51,7 +52,7 @@ def _clamp(value: Any, default: float) -> float:
 
 
 def _default_review(paper: Paper) -> dict[str, Any]:
-    text = paper.abstract.strip()
+    text = (paper.fulltext_text if paper.evidence_level == "FULLTEXT_READ" else paper.abstract).strip()
     first_sentence = re.split(r"(?<=[.!?。！？])\s+", text)[0] if text else "摘要未提供足够结果信息。"
     triage = paper.triage or {}
     mechanism = "、".join(str(value) for value in (triage.get("matched_mechanisms") or [])[:4])
@@ -71,24 +72,58 @@ def _default_review(paper: Paper) -> dict[str, Any]:
     }
 
 
-def _prompt(paper: Paper) -> str:
-    evidence = paper.fulltext_text if paper.evidence_level == "FULLTEXT_READ" else paper.abstract
+def _section_chunks(text: str, *, chunk_chars: int = 4500, max_chunks: int = 8) -> str:
+    """Build a review evidence map that samples the whole article, not only its front.
+
+    OA converters do not all preserve headings.  We therefore use named sections
+    when available and deterministic evenly-spaced chunks as a safe fallback.
+    """
+    normalized = re.sub(r"\s+", " ", str(text or "")).strip()
+    if not normalized:
+        return ""
+    positions: list[tuple[int, str]] = []
+    for match in re.finditer(r"(?i)\b(abstract|introduction|materials and methods|methods|results|discussion|conclusions?|limitations)\b", normalized):
+        label = match.group(1).casefold()
+        if not positions or match.start() - positions[-1][0] > 120:
+            positions.append((match.start(), label))
+    sections: list[tuple[str, str]] = []
+    for index, (start, label) in enumerate(positions):
+        end = positions[index + 1][0] if index + 1 < len(positions) else len(normalized)
+        value = normalized[start:end].strip()
+        if len(value) >= 180:
+            sections.append((label, value[:chunk_chars]))
+    if len(sections) >= 3:
+        return "\n\n".join(f"[{label}] {value}" for label, value in sections[:max_chunks])
+    chunks = [normalized[index : index + chunk_chars] for index in range(0, len(normalized), chunk_chars)]
+    if len(chunks) <= max_chunks:
+        selected = chunks
+    else:
+        indexes = sorted({round(index * (len(chunks) - 1) / (max_chunks - 1)) for index in range(max_chunks)})
+        selected = [chunks[index] for index in indexes]
+    return "\n\n".join(f"[fulltext chunk {index + 1}] {value}" for index, value in enumerate(selected))
+
+
+def _prompt(paper: Paper, profile: dict[str, Any] | None = None) -> str:
+    evidence = _section_chunks(paper.fulltext_text) if paper.evidence_level == "FULLTEXT_READ" else paper.abstract
+    profile = profile or {}
     return (
         "你是严格的生物医学深度审稿器。只根据下列证据输出 JSON，不得编造未出现的细节。\n"
         f"evidence_level={paper.evidence_level}\n"
+        "研究画像（本次运行冻结）：" + json.dumps(profile, ensure_ascii=False, sort_keys=True) + "\n"
+        "必须以研究画像中的机制和实验模式解释相关性；陌生生物学只有在实验逻辑可迁移时才推荐。\n"
         "ABSTRACT_ONLY 只允许摘要层面的结论；禁止 figure/dose/sample-size/详细方法等全文级断言。"
         "FULLTEXT_READ 才能引用解析全文中实际出现的图号或方法。\n"
         "字段：direct_relevance, mechanism_relevance, experimental_similarity, transferability, idea_value, evidence_quality（0-100），"
         "core_finding, why_recommended, mechanism_mapping, transferable_strategy, new_hypothesis。只输出 JSON。\n"
-        f"题名：{paper.title}\n证据：{evidence[:16000]}"
+        f"题名：{paper.title}\n期刊：{paper.journal}\n证据：{evidence}"
     )
 
 
-def review_paper(paper: Paper, client: LLMClient) -> dict[str, Any]:
+def review_paper(paper: Paper, client: LLMClient, profile: dict[str, Any] | None = None) -> dict[str, Any]:
     review = _default_review(paper)
     try:
         response = client.generate(
-            _prompt(paper),
+            _prompt(paper, profile),
             system="Evidence-level guardrail is mandatory. Return JSON only and never upgrade ABSTRACT_ONLY to full-text evidence.",
             max_tokens=3000,
         )
@@ -112,6 +147,7 @@ def review_paper(paper: Paper, client: LLMClient) -> dict[str, Any]:
             review[field], field_warnings = sanitize_abstract_claim(str(review.get(field, "")))
             warnings.extend(field_warnings)
     review["evidence_level"] = paper.evidence_level
+    review["fulltext_reviewed"] = paper.evidence_level == "FULLTEXT_READ"
     review["claim_warnings"] = list(dict.fromkeys(warnings))
     paper.review = review
     return review
