@@ -55,11 +55,9 @@ sources:
   journal_lane:
     enabled: true
     max_results: 40
-    # Keep the high-tier sweep focused on research articles.
     exclude_publication_types: [Editorial, News, Comment, Letter, Review]
   journal_candidate_slots: 40
   journal_per_venue_quota: 8
-  # Frozen high-tier journal sweep; names follow PubMed/NLM where applicable.
   prioritize_journals: [Nature, Cell, Science, "Nature Immunology", "Nature Metabolism", "Nature Cell Biology", "Nature Medicine", "Nature Communications", Immunity, "Cell Metabolism", "Cell Reports Medicine", "Science Immunology", "Science Translational Medicine", "J Exp Med", "Proc Natl Acad Sci U S A"]
 
 triage:
@@ -71,6 +69,13 @@ fulltext:
   min_text_chars: 200
   min_html_text_chars: 2000
   timeout_seconds: 30
+
+# Only final Top papers receive this second, much more detailed journal-club pass.
+# This intentionally controls token cost while preserving a very detailed report.
+deep_review:
+  enabled: true
+  max_tokens: 7000
+  max_figures: 12
 
 scoring:
   weights:
@@ -87,10 +92,7 @@ output:
   directory: reports
 
 publishing:
-  # Production runs publish a mobile-readable GitHub Issue before WeChat push.
   enabled: true
-  # Optional. Actions may set PUBLIC_SITE_URL instead; this value supports a
-  # project Pages URL or a future custom root domain without code changes.
   public_site_url: ""
 
 state:
