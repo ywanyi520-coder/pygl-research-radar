@@ -5,6 +5,8 @@ import gzip
 import hashlib
 import itertools
 import json
+import os
+from collections import OrderedDict
 import re
 import sys
 import zipfile
@@ -20,7 +22,24 @@ OUT = Path("remote_results")
 TMP = Path("/tmp/pdc_pygl_s15_remaining")
 OUT.mkdir(parents=True, exist_ok=True)
 TMP.mkdir(parents=True, exist_ok=True)
-ARCHIVES = base.FILES
+ALL_ARCHIVES = base.FILES
+def select_archives():
+    raw = os.environ.get("S15_SCAN_ARCHIVES", "").strip()
+    if not raw:
+        return ALL_ARCHIVES
+    by_name = {name.casefold(): name for name in ALL_ARCHIVES}
+    by_pipeline = {base.pipeline(name).casefold(): name for name in ALL_ARCHIVES}
+    selected = []
+    for token in raw.split(","):
+        key = token.strip().casefold()
+        name = by_name.get(key) or by_pipeline.get(key)
+        if not name:
+            raise RuntimeError("Unknown S15_SCAN_ARCHIVES selection")
+        if name not in selected:
+            selected.append(name)
+    return tuple(selected)
+
+ARCHIVES = select_archives()
 COHORTS = ("BRCA", "ccRCC", "COAD", "GBM", "HGSC/OV", "HNSCC", "LSCC", "LUAD", "PDAC", "UCEC", "MB")
 CANONICAL = "MAKPLTDQEKRRQISIRGIVGV"
 
@@ -183,6 +202,157 @@ def scan_flat_gzip(path, archive_name, pipeline, seq, ensp, counters):
     return 1, hit_count
 
 
+
+class PdcRangeReader:
+    """Seekable, bounded-cache HTTP Range reader for a large PDC ZIP."""
+    def __init__(self, url, size, block_size=1024 * 1024, cache_blocks=16):
+        self.url = url
+        self.size = int(size)
+        self.block_size = int(block_size)
+        self.cache_blocks = int(cache_blocks)
+        self.position = 0
+        self.cache = OrderedDict()
+
+    def readable(self):
+        return True
+
+    def seekable(self):
+        return True
+
+    def tell(self):
+        return self.position
+
+    def seek(self, offset, whence=0):
+        if whence == 0:
+            position = offset
+        elif whence == 1:
+            position = self.position + offset
+        elif whence == 2:
+            position = self.size + offset
+        else:
+            raise ValueError("invalid whence")
+        if position < 0:
+            raise ValueError("negative seek position")
+        self.position = min(int(position), self.size)
+        return self.position
+
+    def _block(self, index):
+        if index in self.cache:
+            self.cache.move_to_end(index)
+            return self.cache[index]
+        start = index * self.block_size
+        end = min(self.size - 1, start + self.block_size - 1)
+        response = requests.get(
+            self.url,
+            headers={"Range": "bytes=%d-%d" % (start, end), "Accept-Encoding": "identity"},
+            timeout=180,
+        )
+        if response.status_code != 206:
+            raise RuntimeError("PDC archive server did not honor HTTP Range")
+        data = response.content
+        if len(data) != end - start + 1:
+            raise RuntimeError("PDC archive returned an incomplete byte range")
+        self.cache[index] = data
+        self.cache.move_to_end(index)
+        while len(self.cache) > self.cache_blocks:
+            self.cache.popitem(last=False)
+        return data
+
+    def read(self, amount=-1):
+        if self.position >= self.size:
+            return b""
+        if amount is None or amount < 0:
+            amount = self.size - self.position
+        amount = min(int(amount), self.size - self.position)
+        pieces = []
+        remaining = amount
+        while remaining:
+            block_index = self.position // self.block_size
+            within = self.position % self.block_size
+            block = self._block(block_index)
+            take = min(remaining, len(block) - within)
+            if take <= 0:
+                break
+            pieces.append(block[within:within + take])
+            self.position += take
+            remaining -= take
+        return b"".join(pieces)
+
+    def close(self):
+        self.cache.clear()
+
+
+def confirmed_umich_brca_members():
+    root = Path(os.environ.get("S15_INPUT_ROOT", "remote_input/previous"))
+    candidates = list(root.rglob("PYGL_S15_CONFIRMED.tsv")) if root.exists() else []
+    if not candidates:
+        raise RuntimeError("Frozen S15-confirmed input was not found")
+    members = set()
+    with candidates[0].open(encoding="utf-8-sig", newline="") as handle:
+        for row in csv.DictReader(handle, delimiter="\\t"):
+            if row.get("pipeline") == "UMich" and row.get("cohort") == "BRCA":
+                value = (row.get("file") or "").strip().replace("\\\\", "/")
+                if value:
+                    members.add(value)
+    if not members:
+        raise RuntimeError("Frozen input has no UMich BRCA candidate matrix member")
+    return members
+
+
+def pdc_file_size(record):
+    raw = str(record.get("file_size") or "").strip().replace(",", "")
+    try:
+        return int(float(raw))
+    except ValueError:
+        match = re.fullmatch(r"([0-9.]+)\\s*(B|KB|KIB|MB|MIB|GB|GIB|TB|TIB)?", raw, re.I)
+        if not match:
+            raise RuntimeError("PDC metadata did not provide a usable archive size")
+        unit = (match.group(2) or "B").upper()
+        power = 0 if unit == "B" else (1 if unit in ("KB", "KIB") else
+                 2 if unit in ("MB", "MIB") else 3 if unit in ("GB", "GIB") else 4)
+        return int(float(match.group(1)) * (1024 ** power))
+
+
+def scan_umich_confirmed_members(record, archive_name, pipeline, seq, ensp, counters):
+    allowed = confirmed_umich_brca_members()
+    allowed_keys = {value.casefold() for value in allowed}
+    size = pdc_file_size(record)
+    url, _, http, error = base.signed_url(record.get("file_id"))
+    if not url:
+        raise RuntimeError("Could not obtain a signed PDC URL: " + str(error)[:250])
+    reader = PdcRangeReader(url, size)
+    wanted_found = set()
+    matrix_members = hit_count = 0
+    try:
+        with zipfile.ZipFile(reader) as archive:
+            by_key = {}
+            for item in archive.infolist():
+                if item.is_dir():
+                    continue
+                key = item.filename.replace("\\\\", "/").casefold()
+                base_key = key.split("#", 1)[0]
+                if key in allowed_keys or base_key in allowed_keys:
+                    by_key[item.filename] = item
+                    wanted_found.add(key if key in allowed_keys else base_key)
+            if wanted_found != allowed_keys:
+                raise RuntimeError("One or more frozen UMich candidate matrix members were absent from the archive")
+            for item in by_key.values():
+                low = item.filename.lower()
+                if not low.endswith((".tsv", ".csv", ".txt", ".tsv.gz", ".csv.gz")):
+                    raise RuntimeError("A frozen UMich candidate member is not a supported delimited matrix")
+                matrix_members += 1
+                with archive.open(item) as raw:
+                    stream = gzip.GzipFile(fileobj=raw, mode="rb") if low.endswith(".gz") else raw
+                    hit_count += parse_matrix(stream, archive_name, item.filename, pipeline, seq, ensp, counters)
+                    if stream is not raw:
+                        stream.close()
+    finally:
+        reader.close()
+    if not matrix_members:
+        raise RuntimeError("No frozen UMich candidate matrices were opened")
+    return matrix_members, hit_count, size, http
+
+
 def main():
     for name in ("S15_CrossPipeline_Cohort_Census.tsv", "S15_download_audit.tsv",
                  "S15_imputation_evidence.tsv", "S15_FINAL_STATUS.txt", "S15_remote_audit.log"):
@@ -205,6 +375,25 @@ def main():
             log_writer.writerow({"event": "metadata failed", "details": f"{archive_name}: {status} {error}"})
             continue
         metadata_ok += 1
+        if pipeline == "UMich" and os.environ.get("S15_USE_RANGED_UMICH") == "1":
+            try:
+                matrix_members, hits, size, http = scan_umich_confirmed_members(
+                    rec, archive_name, pipeline, sequence, ensp, counters)
+                downloaded += 1
+                parsed += 1
+                down_writer.writerow({"archive": archive_name, "file_id": rec.get("file_id", ""),
+                    "size_bytes": size, "sha256": "", "http_status": http,
+                    "parse_status": "PARSED_SELECTED_MEMBERS_RANGE", "matrix_members": matrix_members,
+                    "s15_rows": hits, "error": ""})
+                log_writer.writerow({"event": "archive parsed by range", "details":
+                    f"{archive_name} selected_matrix_members={matrix_members} s15_rows={hits}"})
+            except Exception as exc:
+                error_text = f"{type(exc).__name__}: {base.safe_error(exc)}"
+                counters["errors"].append(error_text)
+                down_writer.writerow({"archive": archive_name, "file_id": rec.get("file_id", ""),
+                    "size_bytes": rec.get("file_size", ""), "http_status": "RANGE",
+                    "parse_status": "PARSE_FAILED", "error": error_text})
+            continue
         path, ok, size, sha, http, error = base.download(archive_name, rec.get("file_id"))
         if not ok:
             down_writer.writerow({"archive": archive_name, "file_id": rec.get("file_id", ""),
@@ -297,7 +486,7 @@ def main():
         "evidence_type": "imputation handling", "finding": "KNN imputation was described for the downstream clustering feature set after filtering. A numeric cell in the source matrix alone does not establish whether it was measured or imputed.",
         "status": "SOURCE_TABLE_VALUE_STATUS_REQUIRES_MATRIX_AND_PIPELINE_README_RECONCILIATION"})
     evidence_handle.close()
-    status = [f"METADATA_SUCCESS={metadata_ok}/4", f"DOWNLOAD_SUCCESS={downloaded}/4", f"PARSE_SUCCESS={parsed}/4",
+    status = [f"METADATA_SUCCESS={metadata_ok}/{len(ARCHIVES)}", f"DOWNLOAD_SUCCESS={downloaded}/{len(ARCHIVES)}", f"PARSE_SUCCESS={parsed}/{len(ARCHIVES)}",
               f"CONFIRMED_S15_ROWS={sum(len(v['hits']) for v in counters['cohorts'].values())}",
               f"AMBIGUOUS_S15_CANDIDATES={counters['ambiguous']}", f"PARSE_ERRORS={len(counters['errors'])}",
               "NEXT_STEP=EXACT_MAPPING_AND_ENDPOINT_AVAILABILITY"]
