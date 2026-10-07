@@ -1,10 +1,6 @@
 name: CPTAC PYGL S15 mapping-only artifact recovery
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - remote_audit/s15_normalize_artifact_headers.py
   workflow_dispatch:
     inputs:
       scan_stage_run_id:
