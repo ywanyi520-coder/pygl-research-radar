@@ -1,6 +1,10 @@
 name: CPTAC PYGL S15 targeted route-freeze recovery
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - remote_audit/s15_merge_route_recovery.py
   workflow_dispatch:
 
 permissions:
@@ -42,6 +46,19 @@ jobs:
           S15_USE_RANGED_UMICH: "1"
           S15_INPUT_ROOT: remote_input/previous
         run: python remote_audit/s15_remaining_census.py
+      - name: Save verified scan-stage data for short-term recovery
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pdc-pygl-s15-route-scan-stage
+          path: |
+            remote_results/S15_CrossPipeline_SampleLevel.tsv
+            remote_results/S15_CrossPipeline_Cohort_Census.tsv
+            remote_results/S15_imputation_evidence.tsv
+            remote_results/S15_download_audit.tsv
+            remote_results/S15_FINAL_STATUS.txt
+          if-no-files-found: error
+          retention-days: 14
       - name: Merge successful census rows from all four archives
         run: python remote_audit/s15_merge_route_recovery.py
       - name: Map samples, match total PYGL, inventory endpoint availability, and freeze route
