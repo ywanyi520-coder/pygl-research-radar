@@ -45,7 +45,7 @@ jobs:
         with:
           name: pdc-pygl-s15-route-scan-stage
           repository: ${{ github.repository }}
-          run-id: ${{ inputs.scan_stage_run_id }}
+          run-id: ${{ inputs.scan_stage_run_id || '37662032385' }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
           path: remote_input/scan_stage
       - name: Download completed BCM/Sinai census artifact
@@ -53,7 +53,7 @@ jobs:
         with:
           name: pdc-pygl-s15-remaining-census
           repository: ${{ github.repository }}
-          run-id: ${{ inputs.previous_census_run_id }}
+          run-id: ${{ inputs.previous_census_run_id || '37584796965' }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
           path: remote_input/previous_census
       - name: Download frozen canonical S15 input artifact
@@ -61,7 +61,7 @@ jobs:
         with:
           name: pdc-pygl-s15-remote-audit
           repository: ${{ github.repository }}
-          run-id: ${{ inputs.confirmed_input_run_id }}
+          run-id: ${{ inputs.confirmed_input_run_id || '37566261402' }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
           path: remote_input/previous
       - name: Restore TSV headers from the known historical schemas
