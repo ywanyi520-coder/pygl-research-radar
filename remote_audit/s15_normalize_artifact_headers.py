@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Restore versioned TSV headers in preserved S15 artifacts before merging."""
+"""Validate and restore versioned TSV headers in preserved S15 artifacts."""
 import csv
 from pathlib import Path
 import sys
