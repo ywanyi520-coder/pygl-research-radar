@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""S15-only census of the three remaining PDC Pan-Cancer phosphoproteome exports."""
+"""S15-only census of the four PDC Pan-Cancer phosphoproteome exports."""
 import csv
 import gzip
 import hashlib
@@ -20,7 +20,7 @@ OUT = Path("remote_results")
 TMP = Path("/tmp/pdc_pygl_s15_remaining")
 OUT.mkdir(parents=True, exist_ok=True)
 TMP.mkdir(parents=True, exist_ok=True)
-ARCHIVES = base.FILES[1:]
+ARCHIVES = base.FILES
 COHORTS = ("BRCA", "ccRCC", "COAD", "GBM", "HGSC/OV", "HNSCC", "LSCC", "LUAD", "PDAC", "UCEC", "MB")
 CANONICAL = "MAKPLTDQEKRRQISIRGIVGV"
 
@@ -28,10 +28,14 @@ CENSUS_FIELDS = (
     "pipeline", "archive", "cancer", "S15_detected", "site_mapping_confidence", "peptide",
     "data_representation", "imputed_or_observed", "total_columns", "reference_columns",
     "nonmissing_columns", "nonreference_nonmissing", "exact_mapped_samples", "unique_patients",
-    "primary_tumor_patients", "adjacent_normal_patients", "technical_replicates", "mapping_status",
+    "primary_tumor_patients", "adjacent_normal_patients", "technical_replicates",
+    "observed_patient_n", "imputed_patient_n", "unresolved_value_patient_n", "mapping_status",
 )
 DOWNLOAD_FIELDS = ("archive", "file_id", "size_bytes", "sha256", "http_status", "parse_status", "matrix_members", "s15_rows", "error")
 EVIDENCE_FIELDS = ("pipeline", "archive", "source", "evidence_type", "finding", "status")
+SAMPLE_FIELDS = ("pipeline", "archive", "cancer", "archive_member", "representation", "row_number",
+                 "row_identifier", "peptide", "modified_peptide", "site_annotation", "matrix_column", "value_text",
+                 "is_reference", "numeric_cell", "source_value_status")
 
 
 def writer(path, fields):
@@ -118,12 +122,15 @@ def parse_matrix(stream, archive_name, member_name, pipeline, seq, ensp, counter
         nonreference_ids = [header[i] for i in nonref_idx]
         key = (pipeline, cancer)
         counters["cohorts"][key]["hits"].append({
-            "member": member_name, "row_number": row_number, "row_identifier": row_identifier,
+            "archive": archive_name, "member": member_name, "row_number": row_number, "row_identifier": row_identifier,
             "protein": protein, "peptide": peptide, "modified": modified, "site": site,
             "mapping_confidence": "HIGH: unique canonical sequence mapping", "mapping_evidence": why,
             "representation": representation(member_name), "total_columns": len(sample_idx),
             "reference_columns": len(ref_idx), "numeric_idx": numeric_idx,
             "nonref_idx": nonref_idx, "nonmissing_ids": nonmissing_ids,
+            "samples": [{"matrix_column": header[i], "value_text": values[i],
+                         "is_reference": i in ref_idx, "numeric_cell": base.numeric(values[i])}
+                        for i in sample_idx if i < len(values)],
         })
         hit_n += 1
     return hit_n
@@ -171,6 +178,7 @@ def main():
     log_handle, log_writer = writer(OUT / "S15_remote_audit.log", ("event", "details"))
     down_handle, down_writer = writer(OUT / "S15_download_audit.tsv", DOWNLOAD_FIELDS)
     evidence_handle, evidence_writer = writer(OUT / "S15_imputation_evidence.tsv", EVIDENCE_FIELDS)
+    sample_handle, sample_writer = writer(OUT / "S15_CrossPipeline_SampleLevel.tsv", SAMPLE_FIELDS)
     sequence, ensp = base.get_reference()
     if "QEKRRQISIRGIVGV" not in sequence and "QISIRGIVGV" not in sequence:
         raise RuntimeError("Retrieved P06737 sequence does not contain the canonical S15 motif")
@@ -208,21 +216,13 @@ def main():
             path.unlink(missing_ok=True)
     down_handle.close(); log_handle.close()
 
-    # The known UMich finding is carried forward as aggregate counts from the
-    # final frozen result; no specimen identifiers or abundance values are exported.
+    # Sample identifiers and values are kept only in the temporary Actions artifact.
     all_pipelines = ("UMich", "BCM", "UMich_Sinai", "Broad")
     census_handle, census_writer = writer(OUT / "S15_CrossPipeline_Cohort_Census.tsv", CENSUS_FIELDS)
     for pipeline in all_pipelines:
         archive_name = next((name for name in base.FILES if base.pipeline(name) == pipeline), "")
         for cancer in COHORTS:
             hits = list(counters["cohorts"].get((pipeline, cancer), {}).get("hits", []))
-            if pipeline == "UMich":
-                if cancer == "BRCA":
-                    hits = [{"member": "three frozen UMich row views", "peptide": "QIsIRGIVGVENVAELKK;QIsIRGIVGVENVAELK",
-                             "representation": "single-site;peptide;multi-site", "total_columns": 170,
-                             "reference_columns": 2,
-                             "nonmissing_ids": [f"Specimen_{i:02d}" for i in range(1, 19)] + ["RefInt_Pool14", "RefInt_Pool15"],
-                             "nonref_idx": [f"Specimen_{i:02d}" for i in range(1, 19)], "mapping_confidence": "HIGH"}]
             if hits:
                 h = hits[0]
                 ids = sorted({v for hit in hits for v in hit.get("nonmissing_ids", [])})
@@ -235,10 +235,11 @@ def main():
                 nonref_n = len(nonref)
                 peptide = ";".join(sorted({hit.get("peptide", "") for hit in hits if hit.get("peptide")}))
                 reps = ";".join(sorted({hit.get("representation", "") for hit in hits if hit.get("representation")}))
-                source = "NUMERIC_IN_SOURCE_MATRIX; OBSERVED_VS_IMPUTED_STATUS_PENDING_PIPELINE_DOCUMENTATION"
+                source = "NUMERIC_IN_SOURCE_MATRIX; OBSERVED_VS_IMPUTED_STATUS_RECORDED_PER_CELL_IN_TEMPORARY_ARTIFACT"
                 mapping_status = "PENDING_EXACT_SAMPLE_TO_CASE_MAPPING"
                 exact_samples = "PENDING_EXACT_SAMPLE_TO_CASE_MAPPING"
                 unique_patients = primary = adjacent = technical = "PENDING_EXACT_SAMPLE_TO_CASE_MAPPING"
+                observed_patient_n = imputed_patient_n = unresolved_patient_n = "PENDING_EXACT_SAMPLE_TO_CASE_MAPPING"
                 confidence = "HIGH: sequence-level canonical mapping" if pipeline != "UMich" else "HIGH: frozen prior result"
             else:
                 total = reference = observed = nonref_n = 0
@@ -247,6 +248,7 @@ def main():
                 mapping_status = "NOT_APPLICABLE_NO_S15_ROW"
                 exact_samples = "NONE"
                 unique_patients = primary = adjacent = technical = 0
+                observed_patient_n = imputed_patient_n = unresolved_patient_n = 0
                 confidence = "NONE"
             census_writer.writerow({"pipeline": pipeline, "archive": archive_name, "cancer": cancer,
                 "S15_detected": "YES" if hits else "NO", "site_mapping_confidence": confidence,
@@ -255,8 +257,24 @@ def main():
                 "nonreference_nonmissing": nonref_n, "exact_mapped_samples": exact_samples,
                 "unique_patients": unique_patients, "primary_tumor_patients": primary,
                 "adjacent_normal_patients": adjacent, "technical_replicates": technical,
+                "observed_patient_n": observed_patient_n, "imputed_patient_n": imputed_patient_n,
+                "unresolved_value_patient_n": unresolved_patient_n,
                 "mapping_status": mapping_status})
     census_handle.close()
+    for (pipeline, cancer), cohort in sorted(counters["cohorts"].items()):
+        for hit in cohort["hits"]:
+            for sample in hit.get("samples", []):
+                sample_writer.writerow({
+                    "pipeline": pipeline, "archive": hit.get("archive", ""),
+                    "cancer": cancer, "archive_member": hit.get("member", ""),
+                    "representation": hit.get("representation", ""), "row_number": hit.get("row_number", ""),
+                    "row_identifier": hit.get("row_identifier", ""),
+                    "peptide": hit.get("peptide", ""), "modified_peptide": hit.get("modified", ""),
+                    "site_annotation": hit.get("site", ""), "matrix_column": sample.get("matrix_column", ""),
+                    "value_text": sample.get("value_text", ""), "is_reference": "YES" if sample.get("is_reference") else "NO",
+                    "numeric_cell": "YES" if sample.get("numeric_cell") else "NO",
+                    "source_value_status": "NUMERIC_VALUE_IN_SOURCE_MATRIX; OBSERVED_VS_IMPUTED_UNRESOLVED" if sample.get("numeric_cell") else "MISSING_IN_SOURCE_MATRIX"})
+    sample_handle.close()
     for item in counters["evidence"]:
         evidence_writer.writerow(item)
     evidence_writer.writerow({"pipeline": "UMich", "archive": base.FILES[0], "source": "TMT-Integrator output naming and upstream README",
@@ -266,7 +284,7 @@ def main():
         "evidence_type": "imputation handling", "finding": "KNN imputation was described for the downstream clustering feature set after filtering. A numeric cell in the source matrix alone does not establish whether it was measured or imputed.",
         "status": "SOURCE_TABLE_VALUE_STATUS_REQUIRES_MATRIX_AND_PIPELINE_README_RECONCILIATION"})
     evidence_handle.close()
-    status = [f"METADATA_SUCCESS={metadata_ok}/3", f"DOWNLOAD_SUCCESS={downloaded}/3", f"PARSE_SUCCESS={parsed}/3",
+    status = [f"METADATA_SUCCESS={metadata_ok}/4", f"DOWNLOAD_SUCCESS={downloaded}/4", f"PARSE_SUCCESS={parsed}/4",
               f"CONFIRMED_S15_ROWS={sum(len(v['hits']) for v in counters['cohorts'].values())}",
               f"AMBIGUOUS_S15_CANDIDATES={counters['ambiguous']}", f"PARSE_ERRORS={len(counters['errors'])}",
               "NEXT_STEP=EXACT_MAPPING_AND_ENDPOINT_AVAILABILITY"]
@@ -277,4 +295,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
