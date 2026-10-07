@@ -266,6 +266,8 @@ def site_positions(text):
     found = set()
     for pattern in patterns:
         found.update(int(m.group(1)) for m in re.finditer(pattern, str(text or "")))
+    for match in re.finditer(r"(?i)\|\d+_(\d+)_(\d+)(?=_|$)", str(text or "")):
+        found.update(int(value) for value in match.groups())
     return found
 
 
@@ -349,7 +351,11 @@ def _classify_single(site, raw, sequence):
         return "CONFIRMED_S15", "S15", "unique canonical peptide alignment and phospho-Ser at residue 15"
     if 15 in positions:
         if start <= 14 < start + len(seq) and seq[14 - start] == "S":
-            return "CONFIRMED_S15", "S15", "reported S15 plus unique peptide alignment to canonical Ser15"
+            if re.search(r"(?i)(?<![A-Z0-9])S0*15(?!\d)", site_text):
+                evidence = "reported S15 plus unique peptide alignment to canonical Ser15"
+            else:
+                evidence = "numeric site coordinate 15 plus unique peptide alignment identifies canonical Ser15"
+            return "CONFIRMED_S15", "S15", evidence
         return "FALSE_POSITIVE_SITE_LABEL", "", "reported S15 conflicts with peptide alignment"
     mapped = {start + i + 1 for i in range(len(seq))}
     if mod_sites:
