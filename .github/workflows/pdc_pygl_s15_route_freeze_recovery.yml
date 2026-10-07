@@ -1,0 +1,64 @@
+name: CPTAC PYGL S15 targeted route-freeze recovery
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/pdc_pygl_s15_route_freeze_recovery.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  recover-route:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Check out audit code
+        uses: actions/checkout@v4
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install audit dependency
+        run: python -m pip install requests
+      - name: Download the frozen S15-confirmed input artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: pdc-pygl-s15-remote-audit
+          repository: ${{ github.repository }}
+          run-id: 37566261402
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: remote_input/previous
+      - name: Download the completed BCM and Sinai census
+        uses: actions/download-artifact@v4
+        with:
+          name: pdc-pygl-s15-remaining-census
+          repository: ${{ github.repository }}
+          run-id: 37584796965
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: remote_input/previous_census
+      - name: Scan frozen UMich matrix members by HTTP Range and stream Broad TSV.GZ
+        env:
+          S15_SCAN_ARCHIVES: UMich,Broad
+          S15_USE_RANGED_UMICH: "1"
+          S15_INPUT_ROOT: remote_input/previous
+        run: python remote_audit/s15_remaining_census.py
+      - name: Merge successful census rows from all four archives
+        run: python remote_audit/s15_merge_route_recovery.py
+      - name: Map samples, match total PYGL, inventory endpoint availability, and freeze route
+        env:
+          S15_INPUT_ROOT: remote_input/previous
+        run: python remote_audit/s15_route_freeze.py
+      - name: Upload temporary S15 route-freeze results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pdc-pygl-s15-route-freeze-recovery
+          path: |
+            remote_results/S15_*
+            remote_results/BRCA_*.tsv
+          if-no-files-found: warn
+          retention-days: 14
