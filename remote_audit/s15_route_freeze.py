@@ -585,6 +585,17 @@ def main():
         payne_participant = str(payne_row.get("Participant") or "").strip()
         if payne_participant.startswith("X"):
             payne_participant = payne_participant[1:]
+        payne_crosswalk_reason = ""
+        # PayneLab explicitly maps Adjacent_Normal Participant IDs to Patient_IDs ending in .1.
+        # Resolve that exact resource crosswalk only when its own sample table labels the participant Adjacent_Normal.
+        if payne_patient.endswith(".1"):
+            candidate_participant = payne_patient[:-2]
+            normal_rows = [item for item in payne_sample_map.get(candidate_participant, [])
+                           if norm(item.get("Type")) == "adjacentnormal"]
+            if normal_rows:
+                payne_participant = candidate_participant
+                payne_row = normal_rows[0]
+                payne_crosswalk_reason = "EXACT_PATIENT_ID_TO_ADJACENT_NORMAL_PARTICIPANT"
         payne_case = payne_participant or payne_patient
         if not pdc and payne_case:
             case_matches = [r for r in pdc_records_by_cohort.get(cancer, [])
@@ -610,6 +621,8 @@ def main():
             mapping_method += "; PayneLab exact Hash->Patient_ID"
         if payne_participant:
             mapping_method += "; PayneLab exact Hash->Participant"
+        if payne_crosswalk_reason:
+            mapping_method += "; " + payne_crosswalk_reason
         sample_rows.append({"pipeline": pipeline, "cancer": cancer, "matrix_column": matrix_column,
             "patient_id": patient, "pdc_study_id": pdc.get("_source_pdc_study_id", ""), "pdc_case_id": pdc.get("case_id", ""), "pdc_case_submitter_id": pdc_case,
             "pdc_sample_id": pdc.get("sample_id", ""), "pdc_sample_submitter_id": pdc.get("sample_submitter_id", ""),
@@ -779,13 +792,13 @@ def main():
     (OUT / "S15_FREEZE_SHA256.txt").write_text("\n".join(checksums) + "\n", encoding="utf-8")
     route_label = "COMPLETE_NO_ELIGIBLE_PRIMARY_TUMOR_COHORT" if route_complete_no_tumor else "PROVISIONAL"
     (OUT / "S15_ROUTE_FREEZE_STATUS.txt").write_text(
-        "PDC_STUDY_METADATA=queried\\nPREVIOUS_UMICH_S15_COLUMNS=%d\\nPREVIOUS_BIOLOGICAL_COLUMNS=%d\\nCURRENT_MULTI_SITE_NUMERIC_COLUMNS=%d\\n" % (len(previous_ids), len(previous_biological_ids), len(current_umich_brca_rows)) +
-        "PREVIOUS_ID_SOURCE=%s\\nEXACT_ID_SET_MATCH=%s\\n" % (previous_source, id_reconciliation["exact_id_set_match_after_reference_exclusion"]) +
-        "S15_NUMERIC_CELLS=%d\\nCONCORDANT_BRCA_CASES=%d\\nPRIMARY_TUMOR_PATIENTS=%d\\nADJACENT_NORMAL_PATIENTS=%d\\n" % (len(measurements), len({r['patient_id'] for r in exact_mapped}), len(tumor_patient_ids), len(normal_patient_ids)) +
-        "OBSERVED_PRIMARY_TUMOR_PATIENT_N=%d\\nOBSERVED_ADJACENT_NORMAL_PATIENT_N=%d\\nIMPUTED_PRIMARY_TUMOR_PATIENT_N=%d\\nUNRESOLVED_PRIMARY_TUMOR_PATIENT_N=%d\\n" % (observed_n, observed_normal_n, imputed_n, unresolved_n) +
-        "MATCHED_TOTAL_PYGL_PRIMARY_TUMOR=%d\\nMATCHED_TOTAL_PYGL_ADJACENT_NORMAL=%d\\nTECHNICAL_REPLICATE_UNITS=%d\\n" % (matched_total_n, matched_normal_total_n, technical_replicate_units) +
-        "PRIMARY_ENDPOINT=%s\\nCLINICAL_ASSOCIATION=NOT_RUN\\nROUTE_SELECTION=%s\\n" % (freeze["primary_endpoint"] or "NONE", route_label) +
-        "CROSS_PIPELINE_CENSUS_STATUS=SEE_S15_CrossPipeline_Cohort_Census.tsv\\n", encoding="utf-8")
+        "PDC_STUDY_METADATA=queried\nPREVIOUS_UMICH_S15_COLUMNS=%d\nPREVIOUS_BIOLOGICAL_COLUMNS=%d\nCURRENT_MULTI_SITE_NUMERIC_COLUMNS=%d\n" % (len(previous_ids), len(previous_biological_ids), len(current_umich_brca_rows)) +
+        "PREVIOUS_ID_SOURCE=%s\nEXACT_ID_SET_MATCH=%s\n" % (previous_source, id_reconciliation["exact_id_set_match_after_reference_exclusion"]) +
+        "S15_NUMERIC_CELLS=%d\nCONCORDANT_BRCA_CASES=%d\nPRIMARY_TUMOR_PATIENTS=%d\nADJACENT_NORMAL_PATIENTS=%d\n" % (len(measurements), len({r['patient_id'] for r in exact_mapped}), len(tumor_patient_ids), len(normal_patient_ids)) +
+        "OBSERVED_PRIMARY_TUMOR_PATIENT_N=%d\nOBSERVED_ADJACENT_NORMAL_PATIENT_N=%d\nIMPUTED_PRIMARY_TUMOR_PATIENT_N=%d\nUNRESOLVED_PRIMARY_TUMOR_PATIENT_N=%d\n" % (observed_n, observed_normal_n, imputed_n, unresolved_n) +
+        "MATCHED_TOTAL_PYGL_PRIMARY_TUMOR=%d\nMATCHED_TOTAL_PYGL_ADJACENT_NORMAL=%d\nTECHNICAL_REPLICATE_UNITS=%d\n" % (matched_total_n, matched_normal_total_n, technical_replicate_units) +
+        "PRIMARY_ENDPOINT=%s\nCLINICAL_ASSOCIATION=NOT_RUN\nROUTE_SELECTION=%s\n" % (freeze["primary_endpoint"] or "NONE", route_label) +
+        "CROSS_PIPELINE_CENSUS_STATUS=SEE_S15_CrossPipeline_Cohort_Census.tsv\n", encoding="utf-8")
 
     print((OUT / "S15_ROUTE_FREEZE_STATUS.txt").read_text(encoding="utf-8"), flush=True)
 
