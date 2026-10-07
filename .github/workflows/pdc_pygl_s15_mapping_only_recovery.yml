@@ -1,0 +1,93 @@
+name: CPTAC PYGL S15 mapping-only artifact recovery
+
+on:
+  workflow_dispatch:
+    inputs:
+      scan_stage_run_id:
+        description: Run containing the preserved UMich/Broad S15 scan stage
+        required: true
+        default: "37662032385"
+        type: string
+      previous_census_run_id:
+        description: Run containing the completed BCM/Sinai census
+        required: true
+        default: "37584796965"
+        type: string
+      confirmed_input_run_id:
+        description: Run containing the frozen canonical S15 input table
+        required: true
+        default: "37566261402"
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  recover-route:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Check out audit code
+        uses: actions/checkout@v4
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install audit dependency
+        run: python -m pip install requests
+      - name: Download preserved UMich/Broad scan-stage artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: pdc-pygl-s15-route-scan-stage
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.scan_stage_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: remote_input/scan_stage
+      - name: Download completed BCM/Sinai census artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: pdc-pygl-s15-remaining-census
+          repository: @@REPO@@
+          run-id: ${{ inputs.previous_census_run_id }}
+          github-token: @@TOKEN@@
+          path: remote_input/previous_census
+      - name: Download frozen canonical S15 input artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: pdc-pygl-s15-remote-audit
+          repository: @@REPO@@
+          run-id: ${{ inputs.confirmed_input_run_id }}
+          github-token: @@TOKEN@@
+          path: remote_input/previous
+      - name: Restore TSV headers from the known historical schemas
+        run: python remote_audit/s15_normalize_artifact_headers.py
+      - name: Merge the four pipeline census without rescanning PDC matrices
+        run: python remote_audit/s15_merge_route_recovery.py
+      - name: Map samples, match total PYGL, inventory endpoint availability, and freeze route
+        env:
+          S15_INPUT_ROOT: remote_input/previous
+        run: python remote_audit/s15_route_freeze.py
+      - name: Upload temporary route-freeze artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pdc-pygl-s15-route-freeze-mapping-only
+          path: |
+            remote_results/S15_FINAL_STATUS.txt
+            remote_results/S15_ROUTE_FREEZE_STATUS.txt
+            remote_results/S15_FREEZE_SHA256.txt
+            remote_results/S15_CrossPipeline_Cohort_Census.tsv
+            remote_results/S15_CrossPipeline_SampleLevel.tsv
+            remote_results/S15_CrossPipeline_Sample_to_Patient.tsv
+            remote_results/S15_download_audit.tsv
+            remote_results/S15_imputation_evidence.tsv
+            remote_results/BRCA_S15_sample_to_patient_map.tsv
+            remote_results/S15_totalPYGL_patient_matched.tsv
+            remote_results/BRCA_endpoint_availability.tsv
+            remote_results/S15_ENDPOINT_INVENTORY.tsv
+            remote_results/S15_REPRESENTATION_FREEZE.json
+            remote_results/S15_PRIMARY_COHORT_FREEZE.json
+            remote_results/S15_CLINICAL_ANALYSIS_FREEZE.json
+          if-no-files-found: error
+          retention-days: 14
