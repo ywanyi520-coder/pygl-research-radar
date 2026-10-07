@@ -35,6 +35,36 @@ CLINICAL_ARCHIVE = "Clinical_meta_data_v1.zip"
 ZENODO_RECORD = "8394329"
 PDC_HOSTS = ("https://pdc.cancer.gov/graphql", "https://proteomic.datacommons.cancer.gov/graphql")
 
+PDC_DESIGN_CHANNELS = (
+    "label_free", "itraq_113", "itraq_114", "itraq_115", "itraq_116", "itraq_117",
+    "itraq_118", "itraq_119", "itraq_121", "tmt_126", "tmt_127n", "tmt_127c",
+    "tmt_128n", "tmt_128c", "tmt_129n", "tmt_129c", "tmt_130n", "tmt_130c",
+    "tmt_131", "tmt_131c", "tmt_132n", "tmt_132c", "tmt_133n", "tmt_133c",
+    "tmt_134n", "tmt_134c", "tmt_135n",
+)
+PDC_ROOT_SELECTIONS = {
+    "biospecimenPerStudy": (
+        "aliquot_id sample_id case_id aliquot_submitter_id sample_submitter_id "
+        "case_submitter_id aliquot_status case_status sample_status project_name "
+        "sample_type disease_type primary_site pool taxon"
+    ),
+    "studyExperimentalDesign": (
+        "pdc_study_id study_run_metadata_id study_run_metadata_submitter_id study_id "
+        "study_submitter_id analyte acquisition_type protocol_id protocol_submitter_id "
+        "polarity experiment_type plex_dataset_name experiment_number number_of_fractions "
+        + " ".join(f"{channel} {{ aliquot_id aliquot_run_metadata_id aliquot_submitter_id }}"
+                   for channel in PDC_DESIGN_CHANNELS)
+    ),
+    "clinicalMetadata": (
+        "aliquot_id aliquot_submitter_id morphology primary_diagnosis tumor_grade "
+        "tumor_stage tumor_largest_dimension_diameter"
+    ),
+    "clinicalPerStudy": (
+        "case_id case_submitter_id status disease_type primary_site cause_of_death "
+        "days_to_birth days_to_death age_at_index tumor_grade tumor_stage"
+    ),
+}
+
 MAP_FIELDS = ("pipeline", "cancer", "matrix_column", "patient_id", "pdc_study_id", "pdc_case_id",
               "pdc_case_submitter_id", "pdc_sample_id", "pdc_sample_submitter_id",
               "pdc_aliquot_id", "pdc_aliquot_submitter_id", "sample_type", "pool",
@@ -111,20 +141,16 @@ def root_type_name(root):
 
 
 def query_pdc_root(root, study_id):
-    type_name = root_type_name(root)
-    fields = scalar_fields_for_type(type_name) if type_name else []
-    if root == "biospecimenPerStudy" and not fields:
-        fields = ["aliquot_id", "sample_id", "case_id", "aliquot_submitter_id", "sample_submitter_id",
-                  "case_submitter_id", "aliquot_status", "case_status", "sample_status", "project_name",
-                  "sample_type", "disease_type", "primary_site", "pool"]
+    # PDC's public GraphQL endpoint rejects schema introspection. Use the
+    # documented scalar selections and nested channel aliquot fields instead.
+    fields = PDC_ROOT_SELECTIONS.get(root)
     if not fields:
-        raise RuntimeError("Could not introspect fields for PDC root %s" % root)
-    field_text = " ".join(fields)
+        raise RuntimeError("No documented PDC field selection for root %s" % root)
     queries = []
     for argument in ("pdc_study_id", "study_id"):
         base_args = "%s:%s" % (argument, json.dumps(study_id))
-        queries.extend(["{%s(%s acceptDUA:true) {%s}}" % (root, base_args, field_text),
-                        "{%s(%s) {%s}}" % (root, base_args, field_text)])
+        queries.extend(["{%s(%s acceptDUA:true) {%s}}" % (root, base_args, fields),
+                        "{%s(%s) {%s}}" % (root, base_args, fields)])
     last = None
     for q in queries:
         try:
@@ -136,8 +162,6 @@ def query_pdc_root(root, study_id):
         except Exception as exc:
             last = exc
     raise RuntimeError("PDC %s query failed: %s" % (root, last))
-
-
 def load_previous_s15_sample_ids():
     candidates = [INPUT_ROOT / "PYGL_S15_CONFIRMED.tsv"]
     candidates.extend(INPUT_ROOT.rglob("PYGL_S15_CONFIRMED.tsv") if INPUT_ROOT.exists() else [])
