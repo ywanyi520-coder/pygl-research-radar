@@ -1,10 +1,6 @@
 name: CPTAC PYGL S15 targeted route-freeze recovery
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - .github/workflows/pdc_pygl_s15_route_freeze_recovery.yml
   workflow_dispatch:
 
 permissions:
@@ -53,7 +49,7 @@ jobs:
           S15_INPUT_ROOT: remote_input/previous
         run: python remote_audit/s15_route_freeze.py
       - name: Upload temporary S15 route-freeze results
-        if: always()
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: pdc-pygl-s15-route-freeze-recovery
