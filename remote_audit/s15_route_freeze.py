@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Map observed source-matrix S15 columns, total PYGL, and endpoint availability.
+"""Map S15, reconcile exact PDC and PayneLab cases, and freeze route without association testing.
+
+Map observed source-matrix S15 columns, total PYGL, and endpoint availability.
 
 All sample-level output is written only to the temporary Actions artifact. No
 clinical association tests or outcome-value exports are performed here.
