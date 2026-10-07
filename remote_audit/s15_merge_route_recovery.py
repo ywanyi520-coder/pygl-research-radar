@@ -57,11 +57,22 @@ def main():
     current_census = read_tsv(census_path)
     old_census = read_tsv(previous_census)
     merged_census = merge_rows(old_census, current_census, KEEP_OLD, KEEP_NEW, "pipeline")
-    expected = {(pipeline, cancer) for pipeline in ("UMich", "BCM", "UMich_Sinai", "Broad")
-                for cancer in scan.COHORTS}
-    actual = {(row.get("pipeline", ""), row.get("cancer", "")) for row in merged_census}
-    if actual != expected:
-        raise RuntimeError("Merged census does not contain every pipeline/cohort row")
+    expected_pipelines = {"UMich", "BCM", "UMich_Sinai", "Broad"}
+    actual_pipelines = {row.get("pipeline", "") for row in merged_census}
+    if actual_pipelines != expected_pipelines:
+        raise RuntimeError("Merged census lacks one or more of the four audited pipelines")
+    pipeline_row_counts = {pipeline: sum(row.get("pipeline") == pipeline for row in merged_census)
+                           for pipeline in sorted(expected_pipelines)}
+    expected_cohort_keys = {(pipeline, cancer) for pipeline in expected_pipelines
+                            for cancer in scan.COHORTS}
+    actual_cohort_keys = {(row.get("pipeline", ""), row.get("cancer", ""))
+                          for row in merged_census}
+    missing_cohort_rows = len(expected_cohort_keys - actual_cohort_keys)
+    duplicate_cohort_rows = len(merged_census) - len(actual_cohort_keys)
+    if duplicate_cohort_rows:
+        raise RuntimeError("Merged census contains duplicate pipeline/cohort rows")
+    print("MERGED_CENSUS_ROWS=%d; PIPELINE_ROWS=%s; MISSING_COHORT_ROWS=%d" %
+          (len(merged_census), pipeline_row_counts, missing_cohort_rows), flush=True)
     write_with_fields(census_path, scan.CENSUS_FIELDS, merged_census)
 
     download_path = OUT / "S15_download_audit.tsv"
