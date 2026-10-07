@@ -635,6 +635,7 @@ def main():
     patient_units = aggregate_confirmed_technical_replicates(sample_rows)
     write_tsv(OUT / "S15_totalPYGL_patient_matched.tsv", TOTAL_FIELDS, patient_units)
     write_tsv(OUT / "BRCA_endpoint_availability.tsv", ENDPOINT_FIELDS, endpoint_rows)
+    write_tsv(OUT / "S15_ENDPOINT_INVENTORY.tsv", ENDPOINT_FIELDS, endpoint_rows)
 
     umich_brca = [r for r in measurements if r.get("pipeline") == "UMich" and r.get("cancer") == "BRCA"]
     concordance = representation_concordance(umich_brca)
@@ -681,6 +682,7 @@ def main():
         "total_proteome_audit": total_audit,
         "clinical_archive_audit": clinical_audit,
         "representation_comparison": concordance,
+        "endpoint_inventory": endpoint_rows,
         "clinical_analysis": "NOT_RUN; route selection and endpoint inventory only"
     }
     (OUT / "S15_PRIMARY_COHORT_FREEZE.json").write_text(json.dumps(freeze, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
