@@ -59,7 +59,9 @@ SAMPLE_FIELDS = ("pipeline", "archive", "cancer", "archive_member", "representat
 
 def writer(path, fields):
     handle = Path(path).open("w", encoding="utf-8", newline="")
-    return handle, csv.DictWriter(handle, fieldnames=fields, delimiter="\t", lineterminator="\n", extrasaction="ignore")
+    output = csv.DictWriter(handle, fieldnames=fields, delimiter="\t", lineterminator="\n", extrasaction="ignore")
+    output.writeheader()
+    return handle, output
 
 
 def normalize(value):
