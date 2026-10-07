@@ -219,7 +219,7 @@ META_TOKENS = ("gene", "symbol", "protein", "accession", "uniprot", "ensembl", "
                "phospho", "peptide", "sequence", "localization", "probability",
                "identifier", "feature", "description", "cohort", "cancer", "case",
                "patient", "sampleid", "run", "condition", "group", "database",
-               "rowid", "index", "position")
+               "rowid", "index", "position", "maxpepprob", "referenceintensity")
 
 
 def split_columns(header, first_row):
@@ -319,9 +319,24 @@ def map_peptide(value, sequence):
 
 
 def classify(site, peptide, modified, sequence):
+    raw_values = modified or peptide
+    alternatives = [x.strip() for x in str(raw_values or "").split(";") if x.strip()] or [""]
+    outcomes = []
+    for raw in alternatives:
+        result = _classify_single(site, raw, sequence)
+        if result[0] == "CONFIRMED_S15":
+            return result
+        outcomes.append(result)
+    for priority in ("FALSE_POSITIVE_SITE_LABEL", "OTHER_PYGL_SITE", "AMBIGUOUS"):
+        for result in outcomes:
+            if result[0] == priority:
+                return result
+    return "AMBIGUOUS", "", "no peptide alternative could be classified"
+
+
+def _classify_single(site, raw, sequence):
     site_text = str(site or "")
     positions = site_positions(site_text)
-    raw = modified or peptide
     aa, mods = peptide_sequence(raw)
     if 15 in positions and re.search(r"(?i)(?:RMSLIEEEG|MSLIEEEG)", aa):
         return "FALSE_POSITIVE_SITE_LABEL", "S430", "fixed C-terminal RMSLIEEEG peptide control"
@@ -348,8 +363,12 @@ def could_be_ambiguous_s15(site, peptide, modified, sequence):
     """Flag unresolved evidence that could still map a phosphopeptide to canonical S15."""
     if 15 in site_positions(site):
         return True
-    _, mods, starts = map_peptide(modified or peptide, sequence)
-    return any(start + offset + 1 == 15 for start in starts for offset in mods)
+    raw_values = modified or peptide
+    for raw in str(raw_values or "").split(";"):
+        _, mods, starts = map_peptide(raw.strip(), sequence)
+        if any(start + offset + 1 == 15 for start in starts for offset in mods):
+            return True
+    return False
 
 
 def get_reference():
@@ -405,7 +424,13 @@ def scan_rows(header, rows, archive, source, pipeline, sequence, ensp, hit_write
             continue
         total += 1
         joined = " | ".join(values).upper()
-        if not any(term in joined for term in SEARCH_IDS) and not any(x.upper() in joined for x in ensp):
+        target_identity = (
+            re.search(r"(?<![A-Z0-9])ENSG00000100504(?:\.\d+)?(?![A-Z0-9])", joined)
+            or re.search(r"(?<![A-Z0-9])P06737(?![A-Z0-9])", joined)
+            or re.search(r"(?<![A-Z0-9])PYGL(?![A-Z0-9])", joined)
+            or any(re.search(rf"(?<![A-Z0-9]){re.escape(x.upper())}(?![A-Z0-9])", joined) for x in ensp)
+        )
+        if not target_identity:
             continue
         matched += 1
         gene = field(header, values, ("gene", "symbol"))
@@ -489,6 +514,13 @@ def scan_zip(path, name, seq, ensp, hit_writer, s15_writer, idx_writer, coverage
             for item in members:
                 lower = item.filename.lower()
                 if item.is_dir():
+                    continue
+                if lower.startswith("__macosx/") or Path(lower).name.startswith("._"):
+                    idx_writer.writerow({"archive": name, "archive_member_name": item.filename,
+                        "compressed_size": item.compress_size, "uncompressed_size": item.file_size,
+                        "format": Path(lower).suffix.lstrip("."), "cohort": cohort(item.filename),
+                        "rows": "SKIPPED_METADATA_RESOURCE", "columns": "", "index_fields": "",
+                        "sample_columns": "", "notes": "AppleDouble/macOS metadata resource; excluded from matrix parsing"})
                     continue
                 supported = lower.endswith((".tsv", ".csv", ".txt", ".tsv.gz", ".csv.gz", ".xlsx"))
                 if any(x in lower for x in (".mzml", ".raw", "/raw", "spectra")):
