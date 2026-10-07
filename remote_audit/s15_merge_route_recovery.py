@@ -52,6 +52,7 @@ def write_with_fields(path, fields, rows):
 
 
 def main():
+    print("MERGE_VALIDATION=FOUR_PIPELINE_COVERAGE; COHORT_GAPS_REPORTED_WITHOUT_SYNTHETIC_ROWS", flush=True)
     census_path = OUT / "S15_CrossPipeline_Cohort_Census.tsv"
     previous_census = OLD / "S15_CrossPipeline_Cohort_Census.tsv"
     current_census = read_tsv(census_path)
