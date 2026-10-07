@@ -657,12 +657,15 @@ def main():
         else:
             okparse, nrows, nhits, nfiles, nerrors, error = scan_gzip(path, name, sequence, ensp, hw, sw, iw, coverage)
         hh.flush(); sh.flush(); ih.flush()
-        if not okparse:
-            status = "PARSE_FAILED"
-        else:
+        if okparse:
             parsed += 1
             if nhits: pygl_pipelines.add(pipeline(name))
-            status = "AUDITED_S15_FOUND" if S15_HIT_COUNT else ("AUDITED_PYGL_NO_S15" if nhits else "AUDITED_NO_PYGL")
+        if S15_HIT_COUNT:
+            status = "AUDITED_S15_FOUND"
+        elif not okparse:
+            status = "PARSE_FAILED"
+        else:
+            status = "AUDITED_PYGL_NO_S15" if nhits else "AUDITED_NO_PYGL"
         dw.writerow({"filename": name, "download_success": "YES", "size": size, "SHA256": sha,
                      "HTTP_status": http or "", "parse_status": "PARSED" if okparse else "PARSE_FAILED",
                      "final_status": status, "error": error})
