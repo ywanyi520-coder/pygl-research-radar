@@ -34,15 +34,15 @@ def pipeline_for_archive(row):
 def merge_rows(old_rows, new_rows, keep_old, keep_new, key):
     selected = []
     seen = set()
-    for row in list(old_rows) + list(new_rows):
-        pipeline = row.get(key, "") if key == "pipeline" else pipeline_for_archive(row)
-        allowed = keep_old if row in old_rows else keep_new
-        if pipeline not in allowed:
-            continue
-        identity = tuple(row.get(field, "") for field in row.keys())
-        if identity not in seen:
-            selected.append(row)
-            seen.add(identity)
+    for rows, allowed in ((old_rows, keep_old), (new_rows, keep_new)):
+        for row in rows:
+            pipeline = row.get(key, "") if key == "pipeline" else pipeline_for_archive(row)
+            if pipeline not in allowed:
+                continue
+            identity = tuple(sorted(row.items()))
+            if identity not in seen:
+                selected.append(row)
+                seen.add(identity)
     return selected
 
 
