@@ -289,9 +289,9 @@ def confirmed_umich_brca_members():
         raise RuntimeError("Frozen S15-confirmed input was not found")
     members = set()
     with candidates[0].open(encoding="utf-8-sig", newline="") as handle:
-        for row in csv.DictReader(handle, delimiter="\\t"):
+        for row in csv.DictReader(handle, delimiter="\t"):
             if row.get("pipeline") == "UMich" and row.get("cohort") == "BRCA":
-                value = (row.get("file") or "").strip().replace("\\\\", "/")
+                value = (row.get("file") or "").strip().replace("\\", "/")
                 if value:
                     members.add(value)
     if not members:
@@ -304,7 +304,7 @@ def pdc_file_size(record):
     try:
         return int(float(raw))
     except ValueError:
-        match = re.fullmatch(r"([0-9.]+)\\s*(B|KB|KIB|MB|MIB|GB|GIB|TB|TIB)?", raw, re.I)
+        match = re.fullmatch(r"([0-9.]+)\s*(B|KB|KIB|MB|MIB|GB|GIB|TB|TIB)?", raw, re.I)
         if not match:
             raise RuntimeError("PDC metadata did not provide a usable archive size")
         unit = (match.group(2) or "B").upper()
@@ -329,7 +329,7 @@ def scan_umich_confirmed_members(record, archive_name, pipeline, seq, ensp, coun
             for item in archive.infolist():
                 if item.is_dir():
                     continue
-                key = item.filename.replace("\\\\", "/").casefold()
+                key = item.filename.replace("\\", "/").casefold()
                 base_key = key.split("#", 1)[0]
                 if key in allowed_keys or base_key in allowed_keys:
                     by_key[item.filename] = item
