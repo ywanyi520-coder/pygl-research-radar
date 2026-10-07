@@ -1,6 +1,10 @@
 name: CPTAC PYGL S15 mapping-only artifact recovery
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - remote_audit/s15_normalize_artifact_headers.py
   workflow_dispatch:
     inputs:
       scan_stage_run_id:
@@ -48,17 +52,17 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: pdc-pygl-s15-remaining-census
-          repository: @@REPO@@
+          repository: ${{ github.repository }}
           run-id: ${{ inputs.previous_census_run_id }}
-          github-token: @@TOKEN@@
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           path: remote_input/previous_census
       - name: Download frozen canonical S15 input artifact
         uses: actions/download-artifact@v4
         with:
           name: pdc-pygl-s15-remote-audit
-          repository: @@REPO@@
+          repository: ${{ github.repository }}
           run-id: ${{ inputs.confirmed_input_run_id }}
-          github-token: @@TOKEN@@
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           path: remote_input/previous
       - name: Restore TSV headers from the known historical schemas
         run: python remote_audit/s15_normalize_artifact_headers.py
