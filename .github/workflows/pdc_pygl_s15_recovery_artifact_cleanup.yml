@@ -1,4 +1,4 @@
-name: Remove incomplete PYGL S15 recovery artifact
+name: Clean temporary PYGL S15 recovery artifacts
 
 on:
   workflow_run:
@@ -11,25 +11,28 @@ permissions:
   actions: write
 
 jobs:
-  remove-incomplete-artifact:
-    if: github.event.workflow_run.conclusion != 'success'
+  clean-temporary-artifacts:
     runs-on: ubuntu-latest
     steps:
-      - name: Delete only the artifact from this unsuccessful recovery run
+      - name: Remove only obsolete artifacts from this recovery run
         uses: actions/github-script@v7
         with:
           script: |
             const runId = context.payload.workflow_run.id;
+            const succeeded = context.payload.workflow_run.conclusion === "success";
+            const targetName = succeeded
+              ? "pdc-pygl-s15-route-scan-stage"
+              : "pdc-pygl-s15-route-freeze-recovery";
             const { owner, repo } = context.repo;
             const result = await github.rest.actions.listWorkflowRunArtifacts({
               owner, repo, run_id: runId
             });
             const targets = result.data.artifacts.filter(
-              artifact => artifact.name === "pdc-pygl-s15-route-freeze-recovery"
+              artifact => artifact.name === targetName
             );
             for (const artifact of targets) {
               await github.rest.actions.deleteArtifact({
                 owner, repo, artifact_id: artifact.id
               });
-              core.info(`Deleted incomplete recovery artifact ${artifact.id}`);
+              core.info(`Deleted obsolete recovery artifact ${artifact.id}`);
             }
