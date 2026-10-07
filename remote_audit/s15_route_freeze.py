@@ -578,29 +578,42 @@ def main():
         pdc, pdc_method = pdc_match(matrix_column, study_meta) if study_meta else ({}, "PDC_STUDY_NOT_QUERIED")
         payne_patient = payne.get(matrix_column.casefold(), "") if cancer == "BRCA" and pipeline == "UMich" else ""
         payne_row = payne_sample_id_map.get(matrix_column.casefold(), {}) if cancer == "BRCA" and pipeline == "UMich" else {}
-        if not pdc and payne_patient:
+        # The UMich loader's sample manifest maps each exact matrix hash to a Participant.
+        # Compare that case identifier with PDC; do not strip .1/.2 or _D1/_D2 suffixes.
+        payne_participant = str(payne_row.get("Participant") or "").strip()
+        if payne_participant.startswith("X"):
+            payne_participant = payne_participant[1:]
+        payne_case = payne_participant or payne_patient
+        if not pdc and payne_case:
             case_matches = [r for r in pdc_records_by_cohort.get(cancer, [])
-                            if str(r.get("case_submitter_id") or "").casefold() == payne_patient.casefold()]
+                            if str(r.get("case_submitter_id") or "").casefold() == payne_case.casefold()]
             if case_matches:
                 cases = {str(r.get("case_id") or "") for r in case_matches if not missing(r.get("case_id"))}
-                pdc = {"case_submitter_id": payne_patient}
+                pdc = {"case_submitter_id": payne_case}
                 if len(cases) == 1:
                     pdc["case_id"] = next(iter(cases))
-                pdc_method = "EXACT_CASE_SUBMITTER_ID_AFTER_EXACT_PAYNELAB_HASH_MAPPING"
+                pdc_method = "EXACT_CASE_SUBMITTER_ID_AFTER_EXACT_PAYNELAB_HASH_TO_PARTICIPANT_MAPPING"
         pdc_case = str(pdc.get("case_submitter_id") or "")
-        agreement = "CONCORDANT" if payne_patient and pdc_case and payne_patient.casefold() == pdc_case.casefold() else (
-            "PDC_ONLY" if pdc_case else ("PAYNELAB_ONLY" if payne_patient else "UNMAPPED"))
-        patient = payne_patient or pdc_case
+        agreement = "CONCORDANT" if payne_case and pdc_case and payne_case.casefold() == pdc_case.casefold() else (
+            "PDC_ONLY" if pdc_case else ("PAYNELAB_ONLY" if payne_case else "UNMAPPED"))
+        patient = pdc_case if agreement == "CONCORDANT" else (payne_patient or payne_case or pdc_case)
         sample_type = str(pdc.get("sample_type") or payne_row.get("Type") or "")
         pdc_flag = "EXACT" if pdc_method.startswith("EXACT") else pdc_method
         s15_source = row.get("source_value_status", "")
+        paynelab_flag = ("EXACT_HASH_AND_PARTICIPANT" if payne_patient and payne_participant else
+                         ("EXACT_HASH" if payne_patient else
+                          ("NOT_FOUND" if cancer == "BRCA" and pipeline == "UMich" else "NOT_APPLICABLE")))
+        mapping_method = pdc_method
+        if payne_patient:
+            mapping_method += "; PayneLab exact Hash->Patient_ID"
+        if payne_participant:
+            mapping_method += "; PayneLab exact Hash->Participant"
         sample_rows.append({"pipeline": pipeline, "cancer": cancer, "matrix_column": matrix_column,
             "patient_id": patient, "pdc_study_id": pdc.get("_source_pdc_study_id", ""), "pdc_case_id": pdc.get("case_id", ""), "pdc_case_submitter_id": pdc_case,
             "pdc_sample_id": pdc.get("sample_id", ""), "pdc_sample_submitter_id": pdc.get("sample_submitter_id", ""),
             "pdc_aliquot_id": pdc.get("aliquot_id", ""), "pdc_aliquot_submitter_id": pdc.get("aliquot_submitter_id", ""),
             "sample_type": sample_type, "pool": pdc.get("pool", ""), "PDC_mapping": pdc_flag,
-            "PayneLab_mapping": "EXACT_HASH" if payne_patient else ("NOT_FOUND" if cancer == "BRCA" and pipeline == "UMich" else "NOT_APPLICABLE"),
-            "mapping_agreement": agreement, "mapping_method": pdc_method + ("; PayneLab exact Hash->Patient_ID" if payne_patient else ""),
+            "PayneLab_mapping": paynelab_flag, "mapping_agreement": agreement, "mapping_method": mapping_method,
             "S15_representation": row.get("representation", ""), "S15_value": row.get("value_text", ""),
             "S15_numeric_in_source_matrix": "YES", "S15_observed_status": classify_source_cell_status(row),
             "total_PYGL_value": "", "total_PYGL_matched": "NO"})
@@ -620,7 +633,7 @@ def main():
             except (TypeError, ValueError):
                 pass
 
-    # Availability only: clinical outcome values are parsed in memory and not exported.
+    # Clinical values remain in memory. Availability is tabulated for cases with exact/concordant S15 mappings.
     brca_patients = {r["patient_id"] for r in sample_rows if r["cancer"] == "BRCA" and r["pipeline"] == "UMich"
                      and r["patient_id"] and r["mapping_agreement"] == "CONCORDANT"}
     clinical_records, clinical_audit = parse_clinical_archive(brca_patients)
@@ -642,6 +655,13 @@ def main():
                     for row in pdc_clinical]
     patient_pdc = {r["patient_id"]: r["pdc_case_submitter_id"] for r in sample_rows if r["patient_id"] and r["pdc_case_submitter_id"]}
     endpoint_rows, endpoint_by_patient, endpoint_availability = endpoint_inventory(brca_patients, patient_pdc, clinical_records, pdc_clinical)
+    primary_tumor_case_ids = {r["patient_id"] for r in sample_rows if r["cancer"] == "BRCA" and r["pipeline"] == "UMich"
+                              and r["patient_id"] and r["mapping_agreement"] == "CONCORDANT"
+                              and "tumor" in norm(r["sample_type"])}
+    if not primary_tumor_case_ids:
+        for endpoint_row in endpoint_rows:
+            endpoint_row["suitable_for_primary"] = "NO"
+            endpoint_row["reason"] += " No eligible primary-tumor S15 specimen was mapped; available S15 specimens are adjacent normal."
     for row in sample_rows:
         if row["cancer"] == "BRCA" and row["pipeline"] == "UMich" and row["patient_id"]:
             values = endpoint_availability.get(row["patient_id"], {})
@@ -666,24 +686,44 @@ def main():
     (OUT / "S15_REPRESENTATION_FREEZE.json").write_text(json.dumps(concordance, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     exact_mapped = [r for r in sample_rows if r["cancer"] == "BRCA" and r["pipeline"] == "UMich" and r["mapping_agreement"] == "CONCORDANT"]
     exact_units = [r for r in patient_units if r["mapping_agreement"] == "CONCORDANT"]
-    matched_total_n = sum(1 for r in exact_units if r["matched"] == "YES")
-    tumor_patients = {r["patient_id"] for r in exact_mapped if "tumor" in norm(r["sample_type"]) and r["patient_id"]}
-    normal_patients = {r["patient_id"] for r in exact_mapped if ("normal" in norm(r["sample_type"]) or "adjacentnormal" in norm(r["sample_type"])) and r["patient_id"]}
-    unknown_type_patients = {r["patient_id"] for r in exact_mapped if not r["sample_type"] and r["patient_id"]}
-    technical_replicate_units = sum(1 for r in patient_units if int(r.get("technical_replicate_n", 1)) > 1)
-    observed_patients = {r["patient_id"] for r in exact_mapped if "OBSERVED_SOURCE_QUANTIFICATION" in r["S15_observed_status"] and
-                         "tumor" in norm(r["sample_type"]) and r["patient_id"]}
-    observed_n = len(observed_patients)
-    imputed_n = len({r["patient_id"] for r in exact_mapped if r["S15_observed_status"].startswith("IMPUTED") and r["patient_id"]})
-    unresolved_n = len({r["patient_id"] for r in exact_mapped if "UNRESOLVED" in r["S15_observed_status"] and r["patient_id"]})
+    tumor_mapped = [r for r in exact_mapped if "tumor" in norm(r["sample_type"])]
+    normal_mapped = [r for r in exact_mapped if "normal" in norm(r["sample_type"])]
+    unknown_type_mapped = [r for r in exact_mapped if not r["sample_type"]]
+    tumor_patient_ids = {r["patient_id"] for r in tumor_mapped if r["patient_id"]}
+    normal_patient_ids = {r["patient_id"] for r in normal_mapped if r["patient_id"]}
+    unknown_type_patients = {r["patient_id"] for r in unknown_type_mapped if r["patient_id"]}
+    tumor_units = [r for r in exact_units if "tumor" in norm(r["sample_type"])]
+    normal_units = [r for r in exact_units if "normal" in norm(r["sample_type"])]
+    matched_total_n = sum(1 for r in tumor_units if r["matched"] == "YES")
+    matched_normal_total_n = sum(1 for r in normal_units if r["matched"] == "YES")
+    technical_replicate_units = sum(1 for r in exact_units if int(r.get("technical_replicate_n", 1)) > 1)
+    observed_n = len({r["patient_id"] for r in tumor_mapped if "OBSERVED_SOURCE_QUANTIFICATION" in r["S15_observed_status"] and r["patient_id"]})
+    observed_normal_n = len({r["patient_id"] for r in normal_mapped if "OBSERVED_SOURCE_QUANTIFICATION" in r["S15_observed_status"] and r["patient_id"]})
+    imputed_n = len({r["patient_id"] for r in tumor_mapped if r["S15_observed_status"].startswith("IMPUTED") and r["patient_id"]})
+    unresolved_n = len({r["patient_id"] for r in tumor_mapped if "UNRESOLVED" in r["S15_observed_status"] and r["patient_id"]})
     primary_endpoint = next((r for r in endpoint_rows if r["suitable_for_primary"] == "YES"), None)
+    census_rows = []
+    census_path = OUT / "S15_CrossPipeline_Cohort_Census.tsv"
+    with census_path.open(encoding="utf-8-sig", newline="") as handle:
+        census_rows = list(csv.DictReader(handle, delimiter="\t"))
+    other_s15_positive = [{"pipeline": r.get("pipeline", ""), "cancer": r.get("cancer", "")}
+                          for r in census_rows if r.get("S15_detected") == "YES"
+                          and not (r.get("pipeline") == "UMich" and r.get("cancer") == "BRCA")]
+    route_complete_no_tumor = bool(exact_mapped) and not tumor_patient_ids and not other_s15_positive
     freeze = {
-        "freeze_status": "PROVISIONAL_ROUTE_SELECTION; OTHER_PIPELINE_MAPPING_AND_IMPUTATION_REVIEW_REQUIRED",
-        "primary_cancer": "BRCA" if exact_mapped else None,
-        "primary_pipeline": "UMich" if exact_mapped else None,
-        "primary_representation": "multi-site_protNorm=MD_gu=2" if concordance.get("multi_site_selected") else None,
+        "freeze_status": ("ROUTE_SELECTION_COMPLETE; NO_ELIGIBLE_PRIMARY_TUMOR_COHORT"
+                          if route_complete_no_tumor else
+                          "PROVISIONAL_ROUTE_SELECTION; MAPPED_S15_COVERAGE_REMAINS_INCOMPLETE"),
+        "primary_cancer": "BRCA" if tumor_patient_ids else None,
+        "primary_pipeline": "UMich" if tumor_patient_ids else None,
+        "primary_representation": "multi-site_protNorm=MD_gu=2" if tumor_patient_ids and concordance.get("multi_site_selected") else None,
+        "candidate_normal_tissue_route": {"cancer": "BRCA", "pipeline": "UMich",
+            "representation": "multi-site_protNorm=MD_gu=2" if concordance.get("multi_site_selected") else None,
+            "concordant_case_n": len({r["patient_id"] for r in normal_mapped if r["patient_id"]}),
+            "observed_case_n": observed_normal_n, "matched_total_PYGL_n": matched_normal_total_n},
         "patient_n_concordant_PDC_and_PayneLab": len({r["patient_id"] for r in exact_mapped}),
-        "primary_tumor_patient_n": len(tumor_patients), "adjacent_normal_patient_n": len(normal_patients),
+        "primary_tumor_patient_n": len(tumor_patient_ids),
+        "adjacent_normal_patient_n": len(normal_patient_ids),
         "sample_type_unknown_patient_n": len(unknown_type_patients),
         "exact_mapped_matrix_columns": len({r["matrix_column"] for r in exact_mapped}),
         "technical_replicate_sample_units": technical_replicate_units,
@@ -691,13 +731,19 @@ def main():
         "imputed_patient_n": imputed_n,
         "numeric_source_patient_n_unresolved": unresolved_n,
         "matched_total_PYGL_n": matched_total_n,
+        "matched_adjacent_normal_total_PYGL_n": matched_normal_total_n,
         "primary_endpoint": primary_endpoint.get("endpoint") if primary_endpoint else None,
-        "primary_endpoint_status": "FROZEN_BY_PREDEFINED_COMPLETENESS_RULE" if primary_endpoint else "NO_ENDPOINT_PASSES_PREDEFINED_GATE",
-        "primary_endpoint_rule": "OS/PFS requires >=15 mapped patients and >=10 events; categorical endpoint requires >=15 mapped patients, >=2 groups and >=5 per group.",
+        "primary_endpoint_status": ("FROZEN_BY_PREDEFINED_COMPLETENESS_RULE" if primary_endpoint else
+            ("NO_ELIGIBLE_PRIMARY_TUMOR_S15_COHORT" if route_complete_no_tumor else "NO_ENDPOINT_PASSES_PREDEFINED_GATE")),
+        "primary_endpoint_rule": "OS/PFS requires >=15 mapped primary-tumor patients and >=10 events; categorical endpoint requires >=15 mapped primary-tumor patients, >=2 groups and >=5 per group.",
         "protNorm_MD_interpretation": "TMT-Integrator MD is sample-level median centering of normalized log2 ratios. It is not matched total-PYGL normalization; therefore it does not itself implement pS15/total-PYGL adjustment.",
-        "primary_route_observed_n": observed_n, "primary_route_imputed_n": imputed_n,
-        "reason": "Only exact/concordant patient mappings qualify. Source-matrix numeric cells are not called observed until archive provenance explicitly excludes imputation. No association values or tests were read or computed.",
+        "primary_route_observed_n": observed_n,
+        "primary_route_imputed_n": imputed_n,
+        "reason": ("All 18 exact mapped biological specimens are PDC Solid Tissue Normal / PayneLab Adjacent_Normal; the two remaining numeric columns are reference pools. No primary-tumor S15 patient cohort exists in the audited matrices, so no primary endpoint or clinical model is eligible."
+                   if route_complete_no_tumor else
+                   "Only exact/concordant patient mappings qualify. Route selection remains provisional while other S15-positive pipeline/cohort coverage is unresolved. No association values or tests were read or computed."),
         "backup_cohort": None,
+        "other_pipeline_S15_positive_rows": other_s15_positive,
         "source_files": {"PDC_PanCancer_S15_sample_matrix": "remote_results/S15_CrossPipeline_SampleLevel.tsv",
                          "previous_S15_confirmed_table": previous_source},
         "previous_matrix_column_reconciliation": id_reconciliation,
@@ -710,14 +756,18 @@ def main():
         "clinical_analysis": "NOT_RUN; route selection and endpoint inventory only"
     }
     (OUT / "S15_PRIMARY_COHORT_FREEZE.json").write_text(json.dumps(freeze, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    model_freeze = {"freeze_status": "NO_ASSOCIATION_ANALYSIS_IN_THIS_RUN", "cohort": freeze["primary_cancer"],
-        "pipeline": freeze["primary_pipeline"], "representation": freeze["primary_representation"],
-        "patient_inclusion": "exact/concordant PDC and PayneLab patient mapping; primary tumor only; observed S15 only after provenance confirms no imputation",
+    model_freeze = {"freeze_status": "NO_ELIGIBLE_PRIMARY_TUMOR_COHORT; NO_ASSOCIATION_ANALYSIS_IN_THIS_RUN"
+        if route_complete_no_tumor else "NO_ASSOCIATION_ANALYSIS_IN_THIS_RUN",
+        "cohort": freeze["primary_cancer"], "pipeline": freeze["primary_pipeline"],
+        "representation": freeze["primary_representation"],
+        "patient_inclusion": ("No eligible primary-tumor S15 patients; all mapped non-reference S15 specimens are adjacent normal."
+                             if route_complete_no_tumor else
+                             "Exact/concordant PDC and PayneLab case mapping; primary tumor only; observed S15 only after provenance confirms no imputation."),
         "sample_handling": "Average only technical replicate aliquots with identical mapped sample_id and sample_type after PDC design confirms replicate/run identity; keep tumor and adjacent normal separate.",
         "primary_endpoint": freeze["primary_endpoint"], "secondary_endpoints": [r["endpoint"] for r in endpoint_rows if r["endpoint"] != freeze["primary_endpoint"]],
-        "covariates": [], "statistical_model": "Not executed. Endpoint/model cannot be finalized until observed-vs-imputed provenance is resolved and route freeze is accepted.",
-        "multiple_testing_family": "One predeclared primary endpoint; endpoint inventory is descriptive only.",
-        "association_analysis": "PROHIBITED_BEFORE_COMPLETE_ROUTE_FREEZE"}
+        "covariates": [], "statistical_model": "Not executed; route selection is descriptive and no clinical association is run.",
+        "multiple_testing_family": "Endpoint inventory is descriptive only; no association family was tested.",
+        "association_analysis": "NOT_RUN_BY_USER_SCOPE"}
     (OUT / "S15_CLINICAL_ANALYSIS_FREEZE.json").write_text(json.dumps(model_freeze, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     checksums = []
@@ -725,14 +775,16 @@ def main():
         path = OUT / name
         checksums.append("%s  %s" % (hashlib.sha256(path.read_bytes()).hexdigest(), name))
     (OUT / "S15_FREEZE_SHA256.txt").write_text("\n".join(checksums) + "\n", encoding="utf-8")
+    route_label = "COMPLETE_NO_ELIGIBLE_PRIMARY_TUMOR_COHORT" if route_complete_no_tumor else "PROVISIONAL"
     (OUT / "S15_ROUTE_FREEZE_STATUS.txt").write_text(
-        "PDC_STUDY_METADATA=queried\nPREVIOUS_UMICH_S15_COLUMNS=%d\nPREVIOUS_BIOLOGICAL_COLUMNS=%d\nCURRENT_MULTI_SITE_NUMERIC_COLUMNS=%d\n" % (len(previous_ids), len(previous_biological_ids), len(current_umich_brca_rows)) +
-        "PREVIOUS_ID_SOURCE=%s\nEXACT_ID_SET_MATCH=%s\n" % (previous_source, id_reconciliation["exact_id_set_match_after_reference_exclusion"]) +
-        "S15_NUMERIC_CELLS=%d\nCONCORDANT_BRCA_PATIENTS=%d\nMATCHED_TOTAL_PYGL=%d\n" % (len(measurements), len({r['patient_id'] for r in exact_mapped}), matched_total_n) +
-        "PRIMARY_TUMOR_PATIENTS=%d\nADJACENT_NORMAL_PATIENTS=%d\nTECHNICAL_REPLICATE_UNITS=%d\n" % (len(tumor_patients), len(normal_patients), technical_replicate_units) +
-        "OBSERVED_PATIENT_N=%d\nIMPUTED_PATIENT_N=%d\nUNRESOLVED_PATIENT_N=%d\n" % (observed_n, imputed_n, unresolved_n) +
-        "PRIMARY_ENDPOINT=%s\nCLINICAL_ASSOCIATION=NOT_RUN\n" % (freeze["primary_endpoint"] or "NONE_PASSED") +
-        "CROSS_PIPELINE_CENSUS_STATUS=SEE_S15_CrossPipeline_Cohort_Census.tsv\n", encoding="utf-8")
+        "PDC_STUDY_METADATA=queried\\nPREVIOUS_UMICH_S15_COLUMNS=%d\\nPREVIOUS_BIOLOGICAL_COLUMNS=%d\\nCURRENT_MULTI_SITE_NUMERIC_COLUMNS=%d\\n" % (len(previous_ids), len(previous_biological_ids), len(current_umich_brca_rows)) +
+        "PREVIOUS_ID_SOURCE=%s\\nEXACT_ID_SET_MATCH=%s\\n" % (previous_source, id_reconciliation["exact_id_set_match_after_reference_exclusion"]) +
+        "S15_NUMERIC_CELLS=%d\\nCONCORDANT_BRCA_CASES=%d\\nPRIMARY_TUMOR_PATIENTS=%d\\nADJACENT_NORMAL_PATIENTS=%d\\n" % (len(measurements), len({r['patient_id'] for r in exact_mapped}), len(tumor_patient_ids), len(normal_patient_ids)) +
+        "OBSERVED_PRIMARY_TUMOR_PATIENT_N=%d\\nOBSERVED_ADJACENT_NORMAL_PATIENT_N=%d\\nIMPUTED_PRIMARY_TUMOR_PATIENT_N=%d\\nUNRESOLVED_PRIMARY_TUMOR_PATIENT_N=%d\\n" % (observed_n, observed_normal_n, imputed_n, unresolved_n) +
+        "MATCHED_TOTAL_PYGL_PRIMARY_TUMOR=%d\\nMATCHED_TOTAL_PYGL_ADJACENT_NORMAL=%d\\nTECHNICAL_REPLICATE_UNITS=%d\\n" % (matched_total_n, matched_normal_total_n, technical_replicate_units) +
+        "PRIMARY_ENDPOINT=%s\\nCLINICAL_ASSOCIATION=NOT_RUN\\nROUTE_SELECTION=%s\\n" % (freeze["primary_endpoint"] or "NONE", route_label) +
+        "CROSS_PIPELINE_CENSUS_STATUS=SEE_S15_CrossPipeline_Cohort_Census.tsv\\n", encoding="utf-8")
+
     print((OUT / "S15_ROUTE_FREEZE_STATUS.txt").read_text(encoding="utf-8"), flush=True)
 
 
