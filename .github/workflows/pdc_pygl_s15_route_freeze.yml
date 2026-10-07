@@ -1,0 +1,50 @@
+name: CPTAC PYGL S15 patient mapping and route freeze
+
+on:
+  workflow_run:
+    workflows:
+      - CPTAC Pan-Cancer PYGL S15 remaining-pipeline census
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  route-freeze:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion != 'cancelled'
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Check out audit code
+        uses: actions/checkout@v4
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install audit dependency
+        run: python -m pip install requests
+      - name: Download the frozen S15-confirmed input artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: pdc-pygl-s15-remote-audit
+          repository: ${{ github.repository }}
+          run-id: 37566261402
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: remote_input/previous
+      - name: Scan S15 in the four Pan-Cancer phosphoproteome archives
+        run: python remote_audit/s15_remaining_census.py
+      - name: Map samples, match total PYGL, inventory endpoints, and freeze route
+        env:
+          S15_INPUT_ROOT: remote_input/previous
+        run: python remote_audit/s15_route_freeze.py
+      - name: Upload temporary S15 route-freeze artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pdc-pygl-s15-route-freeze
+          path: remote_results/S15_*
+          if-no-files-found: warn
+          retention-days: 14
