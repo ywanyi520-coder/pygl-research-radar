@@ -171,6 +171,18 @@ def scan_zip(path, archive_name, pipeline, seq, ensp, counters):
     return matrix_members, hit_count
 
 
+def scan_flat_gzip(path, archive_name, pipeline, seq, ensp, counters):
+    """Scan the Broad TSV.GZ as a single matrix instead of treating it as a ZIP."""
+    hit_count = 0
+    try:
+        with gzip.open(path, "rb") as stream:
+            hit_count = parse_matrix(stream, archive_name, archive_name, pipeline, seq, ensp, counters)
+    except Exception as exc:
+        counters["errors"].append(f"{archive_name}: {type(exc).__name__}: {base.safe_error(exc)}")
+        raise
+    return 1, hit_count
+
+
 def main():
     for name in ("S15_CrossPipeline_Cohort_Census.tsv", "S15_download_audit.tsv",
                  "S15_imputation_evidence.tsv", "S15_FINAL_STATUS.txt", "S15_remote_audit.log"):
@@ -200,7 +212,8 @@ def main():
             continue
         downloaded += 1
         try:
-            matrix_members, hits = scan_zip(path, archive_name, pipeline, sequence, ensp,
+            scanner = scan_zip if archive_name.lower().endswith(".zip") else scan_flat_gzip
+            matrix_members, hits = scanner(path, archive_name, pipeline, sequence, ensp,
                                            counters)
             parsed += 1
             down_writer.writerow({"archive": archive_name, "file_id": rec.get("file_id", ""),
