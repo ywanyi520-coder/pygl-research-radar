@@ -1,0 +1,32 @@
+name: CPTAC Pan-Cancer PYGL S15 remaining-pipeline census
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  s15-census:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Check out audit code
+        uses: actions/checkout@v4
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install audit dependency
+        run: python -m pip install requests
+      - name: Run S15-only census of remaining PDC archives
+        run: python remote_audit/s15_remaining_census.py
+      - name: Upload compact S15-only census results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pdc-pygl-s15-remaining-census
+          path: remote_results/S15_*
+          if-no-files-found: warn
+          retention-days: 14
+
