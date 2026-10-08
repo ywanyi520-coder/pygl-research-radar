@@ -54,7 +54,7 @@ jobs:
           python-version: "3.11"
       - name: Install public-data client and table reader
         run: python -m pip install --upgrade requests openpyxl pridepy
-      - name: Phase 1: list manifest only
+      - name: "Phase 1: list manifest only"
         run: python remote_audit/noncptac_pygl_s15_matrix_job.py --accession "${{ matrix.accession }}" --manifest-only
       - name: Upload this accession's manifest artifact
         if: always()
@@ -98,7 +98,7 @@ jobs:
         with:
           name: noncptac-pygl-s15-manifest-${{ matrix.accession }}
           path: phase1-manifest
-      - name: Phase 2: download allowlisted files and scan PYGL S15
+      - name: "Phase 2: download allowlisted files and scan PYGL S15"
         run: python remote_audit/noncptac_pygl_s15_matrix_job.py --accession "${{ matrix.accession }}" --manifest-input phase1-manifest
       - name: Upload this accession's independent audit artifact
         if: always()
