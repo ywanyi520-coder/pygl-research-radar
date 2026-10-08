@@ -43,8 +43,40 @@ def per_accession_paths(accession: str) -> tuple[Path, Path, Path, Path]:
             folder / "NonCPTAC_S15_audit_status.txt")
 
 
-def run_accession(study: dict[str, str]) -> int:
-    """List the complete manifest first, then download strict-name matches only."""
+def run_manifest_only(study: dict[str, str]) -> int:
+    """Phase 1: list the accession's full file manifest without downloading files."""
+    pxd = study["accession"]
+    _, manifest_path, _, status_path = per_accession_paths(pxd)
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        from pridepy.download.client import Client
+        client = Client()
+        native, source, files, file_error = audit.list_processed_files(client, pxd)
+    except Exception as exc:
+        native, source, files = pxd, "unresolved", []
+        file_error = f"{type(exc).__name__}: {exc}"
+
+    manifest = []
+    for item in files:
+        name, category, size = audit.file_fields(item)
+        manifest.append({"dataset": pxd, "repository_accession": native,
+                         "filename": name, "category": category,
+                         "size_bytes": size, "download_status": "MANIFEST_ONLY"})
+    audit.write_tsv(manifest_path, audit.MANIFEST_FIELDS, manifest)
+    lines = [
+        f"DATASET={pxd}", f"REPOSITORY_ACCESSION={native}", f"REPOSITORY_RESOLUTION={source}",
+        f"MANIFEST_FILE_COUNT={len(manifest)}", "PHASE=MANIFEST_ONLY",
+        "DATA_FILE_DOWNLOADS=0", "RAW_DOWNLOADS=0",
+    ]
+    if file_error:
+        lines.append(f"MANIFEST_NOTE={file_error}")
+    status_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print("\n".join(lines), flush=True)
+    return 0
+
+
+def run_accession(study: dict[str, str], manifest_input: Path | None = None) -> int:
+    """Phase 2: download only strict-name matches also present in Phase 1's manifest."""
     pxd = study["accession"]
     inventory_path, manifest_path, evidence_path, status_path = per_accession_paths(pxd)
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
@@ -66,6 +98,16 @@ def run_accession(study: dict[str, str]) -> int:
     # Preserve Phase 1 as a manifest-only artifact before any network transfer.
     audit.write_tsv(manifest_path, audit.MANIFEST_FIELDS, manifest)
     selected = strict_downloads(files)
+    if manifest_input is not None:
+        if manifest_input.is_dir():
+            matches = list(manifest_input.rglob("NonCPTAC_S15_file_manifest.tsv"))
+            if len(matches) != 1:
+                raise FileNotFoundError(f"Expected one phase-1 manifest under {manifest_input}, found {len(matches)}")
+            manifest_input = matches[0]
+        if not manifest_input.is_file():
+            raise FileNotFoundError(f"Phase-1 manifest is missing: {manifest_input}")
+        phase1_names = {row.get("filename", "") for row in rows_from_tsv(manifest_input)}
+        selected = [item for item in selected if audit.file_fields(item)[0] in phase1_names]
     selected_names = {audit.file_fields(item)[0] for item in selected}
     for row in manifest:
         if row["category"] == "RAW" or str(row["filename"]).lower().endswith(audit.RAW_EXTENSIONS):
@@ -170,6 +212,8 @@ def merge_artifacts(input_dir: Path) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--accession", choices=[study["accession"] for study in audit.STUDIES])
+    parser.add_argument("--manifest-only", action="store_true")
+    parser.add_argument("--manifest-input", type=Path)
     parser.add_argument("--merge", action="store_true")
     parser.add_argument("--input-dir", type=Path, default=Path("collected"))
     args = parser.parse_args()
@@ -177,7 +221,9 @@ def main() -> int:
         return merge_artifacts(args.input_dir)
     if args.accession:
         study = next(study for study in audit.STUDIES if study["accession"] == args.accession)
-        return run_accession(study)
+        if args.manifest_only:
+            return run_manifest_only(study)
+        return run_accession(study, args.manifest_input)
     parser.error("select --accession for a matrix worker or --merge for the final merge")
     return 2
 
