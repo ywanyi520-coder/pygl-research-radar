@@ -5,19 +5,46 @@ on:
     branches: [audit/noncptac-pygl-s15]
     paths:
       - .github/workflows/noncptac_pygl_s15_clinical_audit.yml
-      - remote_audit/noncptac_pygl_s15_clinical_audit.py
+      - remote_audit/noncptac_pygl_s15_matrix_job.py
   workflow_dispatch:
 
 permissions:
+  actions: write
   contents: write
-  actions: read
+
+concurrency:
+  group: noncptac-pygl-s15-audit
+  cancel-in-progress: true
 
 jobs:
-  audit:
+  cancel_previous:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 5
     steps:
-      - name: Check out the isolated audit branch
+      - name: Cancel the explicitly superseded legacy scan
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api --method POST "repos/${GITHUB_REPOSITORY}/actions/runs/37711637719/cancel" || true
+
+  audit:
+    needs: cancel_previous
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        accession:
+          - PXD014997
+          - PXD053618
+          - PXD032110
+          - PXD044246
+          - PXD038081
+          - PXD048988
+          - PXD005173
+          - PXD034355
+          - PXD017660
+    steps:
+      - name: Check out the audit branch
         uses: actions/checkout@v4
         with:
           ref: audit/noncptac-pygl-s15
@@ -27,26 +54,54 @@ jobs:
           python-version: "3.11"
       - name: Install public-data client and table reader
         run: python -m pip install --upgrade requests openpyxl pridepy
-      - name: Inventory public processed files and scan PYGL S15
-        run: python remote_audit/noncptac_pygl_s15_clinical_audit.py
-      - name: Commit audit tables to the isolated branch
+      - name: Inventory and scan this accession
+        run: python remote_audit/noncptac_pygl_s15_matrix_job.py --accession "${{ matrix.accession }}"
+      - name: Upload this accession's independent artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: noncptac-pygl-s15-${{ matrix.accession }}
+          path: results/per_accession/${{ matrix.accession }}/
+          if-no-files-found: warn
+          retention-days: 30
+
+  merge:
+    needs: [cancel_previous, audit]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out the audit branch
+        uses: actions/checkout@v4
+        with:
+          ref: audit/noncptac-pygl-s15
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Download all per-accession artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: noncptac-pygl-s15-PXD*
+          path: collected
+      - name: Merge the nine accession results
+        run: python remote_audit/noncptac_pygl_s15_matrix_job.py --merge --input-dir collected
+      - name: Upload merged audit tables
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: noncptac-pygl-s15-merged
+          path: results/NonCPTAC_S15_*
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Commit merged audit tables to the isolated branch
         if: always()
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add results/NonCPTAC_S15_*.tsv results/NonCPTAC_S15_audit_status.txt
           if ! git diff --cached --quiet; then
-            git commit -m "Record non-CPTAC PYGL S15 audit results"
+            git commit -m "Merge matrix non-CPTAC PYGL S15 audit results"
             git push origin HEAD:audit/noncptac-pygl-s15
           fi
-      - name: Upload audit results and logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: noncptac-pygl-s15-audit
-          path: |
-            results/NonCPTAC_S15_*
-            remote_audit_data/
-          if-no-files-found: warn
-          retention-days: 30
 
