@@ -26,7 +26,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh api --method POST "repos/${GITHUB_REPOSITORY}/actions/runs/37711637719/cancel" || true
 
-  audit:
+  manifest:
     needs: cancel_previous
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -54,9 +54,53 @@ jobs:
           python-version: "3.11"
       - name: Install public-data client and table reader
         run: python -m pip install --upgrade requests openpyxl pridepy
-      - name: Inventory and scan this accession
-        run: python remote_audit/noncptac_pygl_s15_matrix_job.py --accession "${{ matrix.accession }}"
-      - name: Upload this accession's independent artifact
+      - name: Phase 1: list manifest only
+        run: python remote_audit/noncptac_pygl_s15_matrix_job.py --accession "${{ matrix.accession }}" --manifest-only
+      - name: Upload this accession's manifest artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: noncptac-pygl-s15-manifest-${{ matrix.accession }}
+          path: results/per_accession/${{ matrix.accession }}/
+          if-no-files-found: warn
+          retention-days: 30
+
+  audit:
+    needs: [cancel_previous, manifest]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        accession:
+          - PXD014997
+          - PXD053618
+          - PXD032110
+          - PXD044246
+          - PXD038081
+          - PXD048988
+          - PXD005173
+          - PXD034355
+          - PXD017660
+    steps:
+      - name: Check out the audit branch
+        uses: actions/checkout@v4
+        with:
+          ref: audit/noncptac-pygl-s15
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install public-data client and table reader
+        run: python -m pip install --upgrade requests openpyxl pridepy
+      - name: Download this accession's phase-1 manifest
+        uses: actions/download-artifact@v4
+        with:
+          name: noncptac-pygl-s15-manifest-${{ matrix.accession }}
+          path: phase1-manifest
+      - name: Phase 2: download allowlisted files and scan PYGL S15
+        run: python remote_audit/noncptac_pygl_s15_matrix_job.py --accession "${{ matrix.accession }}" --manifest-input phase1-manifest
+      - name: Upload this accession's independent audit artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -66,7 +110,7 @@ jobs:
           retention-days: 30
 
   merge:
-    needs: [cancel_previous, audit]
+    needs: [cancel_previous, manifest, audit]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -81,7 +125,7 @@ jobs:
           python-version: "3.11"
       - name: Install merge dependencies
         run: python -m pip install --upgrade requests openpyxl pridepy
-      - name: Download all per-accession artifacts
+      - name: Download all per-accession audit artifacts
         uses: actions/download-artifact@v4
         with:
           pattern: noncptac-pygl-s15-PXD*
