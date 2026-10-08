@@ -79,6 +79,8 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+      - name: Install merge dependencies
+        run: python -m pip install --upgrade requests openpyxl pridepy
       - name: Download all per-accession artifacts
         uses: actions/download-artifact@v4
         with:
@@ -95,7 +97,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
       - name: Commit merged audit tables to the isolated branch
-        if: always()
+        if: success()
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -104,4 +106,3 @@ jobs:
             git commit -m "Merge matrix non-CPTAC PYGL S15 audit results"
             git push origin HEAD:audit/noncptac-pygl-s15
           fi
-
